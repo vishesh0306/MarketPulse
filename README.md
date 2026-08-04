@@ -2,7 +2,12 @@
 
 Real-time market intelligence system that scrapes Indian stock-market discussion from Twitter/X, cleans and stores it efficiently, and converts the text into quantitative trading signals.
 
-Built for the Qode technical assignment (data collection, processing, analysis) and structured the way the underlying engineering role expects a production system to be built: phased delivery, validation gates between phases, readable self-explaining code, and explicit handling of accuracy, performance, and scale.
+Built for a take-home technical assignment covering data collection, processing, and
+analysis, and structured the way a production system should be: phased delivery with a
+validation gate between each phase, readable self-explaining code, and explicit handling
+of accuracy, performance, and scale. See `docs/TECHNICAL_DOCUMENTATION.md` for the full
+technical write-up — design decisions and why, real challenges hit during development and
+how each was solved, performance numbers, and known limitations.
 
 ## What this repo does
 
@@ -11,6 +16,33 @@ Built for the Qode technical assignment (data collection, processing, analysis) 
 3. **Converts text to signals** using TF-IDF vectorization + engineered features (lexicon-based sentiment tuned for Indian market slang, engagement-weighted virality, hashtag co-occurrence momentum), aggregated into a composite trading signal with a bootstrapped confidence interval per time bucket.
 4. **Visualizes** the signal and underlying volume/engagement trends using memory-efficient, sampled/streaming plots suitable for large datasets.
 5. **Scales**: every stage is designed so a 10x increase in daily tweet volume requires configuration/backend changes, not a redesign — see "Key design decisions" below.
+
+## Project structure
+
+```
+MarketPulse/
+├── src/
+│   ├── scraper/            # Selenium + Nitter collection: rate limiting, host failover,
+│   │                        #   anti-bot handling, concurrent worker pool
+│   ├── processing/         # cleaning, Unicode normalization, schema validation,
+│   │                        #   deduplication, partitioned Parquet storage
+│   ├── analysis/           # TF-IDF, sentiment/virality/momentum features,
+│   │                        #   composite signal + bootstrapped confidence intervals
+│   ├── visualization/      # memory-bounded plotting (reservoir sampling + pre-aggregation)
+│   └── utils/               # config loading, structured JSON logging
+├── tests/                   # 57 tests: unit, integration, and regressions for every bug
+│                            #   found during development (~90% coverage on core modules)
+├── config/settings.yaml     # every tunable value lives here — hashtags, rate limits,
+│                            #   signal weights, sentiment lexicon — nothing hardcoded in src/
+├── scripts/
+│   ├── run_pipeline.sh       # runs all 4 stages end to end
+│   └── validate_phase.py     # checks a phase's run-summary JSON against its exit criteria
+├── docs/
+│   ├── TECHNICAL_DOCUMENTATION.md   # approach, tradeoffs, challenges solved, limitations
+│   └── sample_output/                # real sample data for each pipeline stage
+├── data/                     # generated at runtime: raw/ → processed/ → output/
+└── logs/                     # structured JSON logs + a run-summary JSON per phase
+```
 
 ## How this repo is organized as a delivery
 
@@ -61,6 +93,66 @@ bash scripts/run_pipeline.sh
 
 Each step writes a machine-readable run summary to `logs/run_<phase>_<timestamp>.json`
 and appends a structured JSON log line per event to `logs/<module>.log`.
+
+### What to expect when it runs
+
+**Timing**: collection is the slow, variable stage — it depends on live tweet volume and
+which Nitter host is healthy at the time, typically a few minutes for a full 4-hashtag run.
+Processing, analysis, and plotting are each fast regardless (well under 30 seconds on a
+dataset of a few thousand tweets), since they're chunked/vectorized rather than looping
+per row.
+
+**What success looks like** — a real log line from each stage:
+
+```
+{"message": "scrape run complete", "total_collected": 1438, "summary_path": "logs/run_scraper_....json"}
+{"message": "processing run complete", "in": 6075, "out": 1617, "rejected": 0, "deduped": 4458, "peak_memory_mb": 25.24}
+{"message": "tfidf fit complete", "documents": 1617, "vocabulary_size": 5000, "top_terms": ["nifty", "sensex", "nifty50", "banknifty", "market", ...]}
+{"message": "signal generation complete", "buckets": 289, "hashtags": ["banknifty", "intraday", "nifty50", "sensex"]}
+{"message": "plotting complete", "plots_written": [".../volume_over_time.png", ".../signal_with_ci.png", ".../hashtag_engagement_distribution.png"], "peak_memory_mb": 8.97}
+```
+
+The three plots, specifically:
+- **`volume_over_time.png`** — one colored line per hashtag, tweet count per 15-minute bucket.
+- **`signal_with_ci.png`** — one subplot per hashtag (stacked vertically), composite signal
+  line with the confidence interval shaded around it — the shaded band should visibly
+  narrow where a bucket has more tweets and widen where it has fewer.
+- **`hashtag_engagement_distribution.png`** — two side-by-side bar charts: tweet count and
+  mean engagement per hashtag, from a reservoir sample of the processed data.
+
+Real counts (tweet totals, bucket counts, dedup ratios) will differ from the numbers
+above every time you run it — that's expected, since it's live data. What shouldn't
+differ: `in == out + rejected + deduped` reconciling exactly, zero nulls in the signal
+output, and all three plot files being written.
+
+### Troubleshooting
+
+Running the scraper (directly or via `run_pipeline.sh`) prints a lot of text from Chrome
+itself, not from this project's code. Most of it is harmless noise, not a sign of failure:
+
+- `AMD VideoProcessorGetOutputExtension failed`, `USB: usb_device_win.cc ... Failed to
+  read descriptors`, `DecoderStatus::0`, `TensorFlow Lite XNNPACK delegate for CPU` — GPU
+  driver quirks, USB device probing, and media/ML subsystems Chrome initializes on launch
+  regardless of what you're doing with it. Unrelated to scraping.
+- `Registration response error message: DEPRECATED_ENDPOINT` /
+  `PHONE_REGISTRATION_ERROR` — Chrome's built-in push-notification service failing to
+  reach a retired Google endpoint. This project never uses push notifications.
+- `DevTools listening on ws://127.0.0.1:...` — normal startup message from every Chrome
+  session Selenium controls, not an error at all despite appearing alongside the ones above.
+
+**What actually indicates a problem**: a `"level": "ERROR"` line from *this project's own
+logger* (`"logger": "twitter_scraper"` etc., not Chrome's own output), or the pipeline
+script exiting before printing `"Pipeline complete."`. A `"falling back to next Nitter
+host"` line is the resilience system recovering from an unhealthy host, not a failure by
+itself — check that hashtag's `collected` count in the final run summary; it only matters
+if that ends up at 0.
+
+If you see mangled characters (e.g. emoji or Devanagari text showing as `ðŸ‘†`-style
+garbage) when using PowerShell's `Get-Content` on a raw `.jsonl` file, that's a console
+display issue, not corrupted data — Windows PowerShell doesn't default to UTF-8. Use
+`Get-Content -Encoding utf8` to view it correctly, or just trust that `pandas.read_parquet`
+downstream reads it correctly regardless (it does — verified with a byte-identical
+round-trip test on Devanagari + emoji content).
 
 ### Run tests
 
