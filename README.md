@@ -171,6 +171,41 @@ output and are out of scope for an automated check.
 python scripts/validate_phase.py --phase scraper      # or: processing, signals
 ```
 
+### Run with Docker
+
+```bash
+docker build -t marketpulse .
+docker run --rm -v "$(pwd)/data:/app/data" -v "$(pwd)/logs:/app/logs" marketpulse
+```
+
+The image installs Chrome + all dependencies and runs `scripts/run_pipeline.sh` by
+default (override with `-e HASHTAGS=... -e MIN_TWEETS=... -e WORKERS=...`, the same
+variables the script reads on the host). Verified directly, not just assumed:
+
+- The image builds cleanly and `import src` / config loading work inside the container.
+- Chrome installs and launches correctly, and outbound network access from the container
+  works (confirmed with a raw HTTP request to a Nitter host, independent of Selenium).
+- Processing, analysis, and visualization all run correctly in the container against
+  real, already-collected data — verified end to end with real output (461 tweets in,
+  82 signal buckets out, all 3 plots rendered).
+- **Scraping specifically could not be re-verified inside Docker today**, but not because
+  of anything Docker-specific: at the time of writing, all three configured Nitter hosts
+  are rejecting scraping traffic with an anti-bot challenge, identically whether the
+  request comes from the host machine or the container (confirmed by testing both,
+  including with `--network host` to rule out Docker's networking layer specifically).
+  This is most likely IP-level anti-bot escalation from the sheer volume of scraping
+  done against these hosts during development, not a defect — the failover/soft-block
+  detection correctly identified and reported it rather than hanging or returning fake
+  data. There's no technical reason to expect Docker to behave differently from the host
+  for the scraping stage once host availability recovers; only that specific combination
+  couldn't be re-confirmed live today.
+- `docker-compose.yml` additionally provisions optional local TimescaleDB + Redis for
+  anyone extending storage beyond flat Parquet files (see `ARCHITECTURE.md` section 6's
+  10x-scale story) — the pipeline itself doesn't require or connect to either yet.
+
+`.env.example` → `.env` is only needed for that optional TimescaleDB/Redis extension via
+`docker-compose up`; the `docker run` command above needs no `.env` file at all.
+
 ## Key design decisions
 
 - **No paid APIs**: x.com's own search UI redirects unauthenticated requests to a login

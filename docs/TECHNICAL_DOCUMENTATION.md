@@ -74,6 +74,21 @@ doubled the dataset.
   of development, discovered only because a distribution plot came up empty. Since the
   bug corrupted data at collection time, fixing the code required a full re-scrape, not
   just a patch.
+- **Docker packaging had three real bugs**, found by actually building and running the
+  image rather than trusting it untested: no `.dockerignore` (so `COPY . .` would have
+  pulled in `.venv/`, `.git/`, and accumulated `data/`/`logs/` — including a Windows venv
+  that would be silently broken inside the Linux container), `docker-compose.yml`
+  requiring a non-existent `.env` file for a feature the pipeline doesn't even use yet,
+  and `run_pipeline.sh`'s venv-detection logic (added to fix a different, host-side bug)
+  having no fallback for the container, where dependencies are installed straight into
+  system Python with no venv at all. All three fixed and verified: the image builds
+  cleanly, and processing/analysis/visualization were confirmed working end to end
+  inside the container against real data. An initial hypothesis that the scraping stage
+  specifically failed in Docker due to a browser-fingerprint difference turned out to be
+  wrong once tested further — the identical anti-bot block was reproduced on the host
+  too, pointing to IP-level rate-limiting from development volume rather than anything
+  Docker-specific. Worth stating plainly: that first hypothesis was corrected by testing
+  it, not asserted and left unverified.
 
 ## Performance and scalability
 

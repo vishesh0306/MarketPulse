@@ -8,11 +8,15 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-    env_file:
-      - .env
-    depends_on:
-      - db
-      - redis
+    environment:
+      HASHTAGS: ${HASHTAGS:-nifty50,sensex,intraday,banknifty}
+      HOURS: ${HOURS:-24}
+      MIN_TWEETS: ${MIN_TWEETS:-2000}
+      WORKERS: ${WORKERS:-4}
+    # depends_on db/redis is deliberately omitted: the current pipeline reads all config
+    # from config/settings.yaml and doesn't connect to Postgres/Redis at all yet (that's
+    # documented 10x-scale future work in ARCHITECTURE.md section 6) — this service runs
+    # standalone against local Parquet files with no dependency on the other two.
 
   db:
     image: timescale/timescaledb:latest-pg16

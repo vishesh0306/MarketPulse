@@ -2,18 +2,25 @@
 # Runs the full MarketPulse pipeline end to end: collect -> process -> analyze -> plot.
 set -euo pipefail
 
-# Resolve the venv's own interpreter directly rather than relying on an inherited
-# activation — a venv activated in a parent PowerShell session does not propagate its
-# PATH into a bash subprocess spawned from it (confirmed: `python` resolves to whatever
-# is first on bash's own PATH, or nothing at all, not the project's venv).
+# Resolve an interpreter directly rather than relying on inherited shell state — a venv
+# activated in a parent PowerShell session does not propagate its PATH into a bash
+# subprocess spawned from it (confirmed: `python` resolves to whatever is first on bash's
+# own PATH, or nothing at all, not the project's venv). Prefer the project's own venv when
+# one exists (local development); fall back to whatever `python`/`python3` is already on
+# PATH otherwise (inside the Docker image, where dependencies are installed directly into
+# the container's system Python and no venv exists at all).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [ -x "$REPO_ROOT/.venv/Scripts/python.exe" ]; then
     PYTHON="$REPO_ROOT/.venv/Scripts/python.exe"        # Windows venv layout
 elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
     PYTHON="$REPO_ROOT/.venv/bin/python"                # POSIX venv layout
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="python3"                                     # no venv — e.g. inside Docker
+elif command -v python >/dev/null 2>&1; then
+    PYTHON="python"
 else
-    echo "No .venv found at $REPO_ROOT/.venv — run 'python -m venv .venv && pip install -r requirements.txt' first." >&2
+    echo "No Python interpreter found (no .venv, no python3/python on PATH). Run 'python -m venv .venv && pip install -r requirements.txt' first." >&2
     exit 1
 fi
 cd "$REPO_ROOT"
