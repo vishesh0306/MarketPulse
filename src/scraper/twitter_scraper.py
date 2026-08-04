@@ -1,7 +1,6 @@
 """Per-hashtag X/Twitter search scraping via Nitter — an open-source, login-free HTML
-front-end for X.com's public content. x.com's own search UI redirects unauthenticated
-requests to a login wall (verified 2026-08-04), so this targets Nitter instances instead,
-with automatic failover across configured hosts when one is down or soft-blocked.
+front-end for X.com's public content, used since x.com's own search UI requires a login.
+Automatic failover across configured hosts when one is down or soft-blocked.
 
 No official/paid Twitter API and no tweepy — Selenium against a public search UI only.
 """
@@ -23,6 +22,7 @@ from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from urllib3.exceptions import ReadTimeoutError as URLLib3ReadTimeoutError
 
 from src.scraper.anti_detection import is_soft_blocked
 from src.scraper.rate_limiter import RateLimitedError, TokenBucketRateLimiter
@@ -132,7 +132,7 @@ def extract_tweet_fields(card_html: str, source_hashtag: str) -> dict[str, Any]:
     if content_node:
         # separator=" " prevents adjacent inline tags (e.g. a mention link followed
         # directly by text) from merging into one token when strip=True trims each
-        # fragment individually — see extraction fixture test for the regression case.
+        # fragment individually.
         text = _WHITESPACE_RE.sub(" ", content_node.get_text(separator=" ", strip=True)).strip()
     else:
         text = ""
@@ -171,13 +171,9 @@ def iter_result_pages(
                 EC.presence_of_element_located((By.CLASS_NAME, "timeline"))
             )
         except TimeoutException as exc:
-            # A full-page anti-bot challenge (e.g. an Anubis proof-of-work check) never
-            # renders .timeline at all, so it always times out here rather than reaching
-            # the is_soft_blocked() check below — that check was unreachable for exactly
-            # the case it exists to catch. Classify the timeout by inspecting the page
-            # before giving up: a recognized challenge page is retryable (RateLimitedError
-            # goes through backoff, giving a proof-of-work JS challenge time to resolve);
-            # a genuinely unresponsive host is not (ScrapeTimeoutError, no retry).
+            # A full-page anti-bot challenge never renders .timeline, so it times out here
+            # rather than reaching the is_soft_blocked() check below. Inspect the page before
+            # giving up: a recognized challenge page is retryable, a dead host is not.
             if is_soft_blocked(driver.page_source, soft_block_indicators):
                 raise RateLimitedError(
                     "soft-block/anti-bot indicator detected after page-render timeout"
@@ -315,13 +311,13 @@ def _attempt_host(
 
     try:
         driver.get(url)
-    except WebDriverException as exc:
+    except (WebDriverException, URLLib3ReadTimeoutError) as exc:
         return {
             "collected": 0,
             "parse_errors": 0,
             "errors": [f"{host}: navigation failed: {exc}"],
             "backoff_triggered": False,
-            "host_exhausted": False,
+            "host_exhausted": True,
         }
 
     collected = 0
@@ -344,7 +340,7 @@ def _attempt_host(
                 if collected >= remaining_target or reached_cutoff:
                     break
             break
-        except (RateLimitedError, TimeoutException) as exc:
+        except (RateLimitedError, TimeoutException, URLLib3ReadTimeoutError) as exc:
             backoff_triggered = True
             retry += 1
             errors.append(f"{host}: {exc}")

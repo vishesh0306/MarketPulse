@@ -1,9 +1,11 @@
-"""Tests for src/scraper — extraction logic verified offline against tests/fixtures/,
-plus a simulated rate-limit/backoff scenario that doesn't require a live network call.
+"""Tests for src/scraper — extraction logic against tests/fixtures/, plus a simulated
+rate-limit/backoff scenario that doesn't require a live network call.
 """
 
 from __future__ import annotations
 
+import io
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -12,13 +14,15 @@ import pytest
 from bs4 import BeautifulSoup
 
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from urllib3.exceptions import ReadTimeoutError as URLLib3ReadTimeoutError
 
 from src.scraper.anti_detection import is_soft_blocked
 from src.scraper.rate_limiter import RateLimitedError, TokenBucketRateLimiter
 from src.scraper.twitter_scraper import (
     ParseError,
     ScrapeTimeoutError,
-    _extract_engagement,  # testing this internal directly is the point of the regression test below
+    _attempt_host,
+    _extract_engagement,
     _scrape_one_hashtag,
     build_search_url,
     extract_tweet_fields,
@@ -66,7 +70,7 @@ def test_extract_tweet_fields_first_card_values(fixture_cards: list[str]) -> Non
 
 def test_extract_tweet_fields_mentions_split_across_adjacent_links(fixture_cards: list[str]) -> None:
     """A mention link immediately followed by text (no source whitespace) must not merge
-    into one token — regression test for the get_text(strip=True) fragment-merging bug."""
+    into one token."""
     record = extract_tweet_fields(fixture_cards[0], "nifty50")
     assert "RahulGandhi" in record["mentions"]
 
@@ -77,9 +81,9 @@ def test_extract_tweet_fields_raises_parse_error_on_empty_card() -> None:
 
 
 def test_extract_engagement_finds_icon_span_not_wrapper_div(fixture_cards: list[str]) -> None:
-    """Regression test: the icon lookup must land on <span class="icon-comment"> etc.,
-    not the wrapping <div class="icon-container"> (which also starts with "icon-" and,
-    being the shallower match, was silently winning the lookup and zeroing every count)."""
+    """The icon lookup must land on <span class="icon-comment"> etc., not the wrapping
+    <div class="icon-container"> (which also starts with "icon-" and, being the shallower
+    match, would otherwise win and zero every count)."""
     soup = BeautifulSoup(fixture_cards[11], "html.parser")
     engagement = _extract_engagement(soup)
     assert engagement == {"replies": 26, "retweets": 0, "likes": 8}
@@ -115,8 +119,7 @@ def test_is_soft_blocked_detects_known_indicators() -> None:
 
 
 def test_rate_limiter_backoff_increases_with_attempt() -> None:
-    """Simulates a 429/soft-block scenario: each retry attempt should back off longer,
-    capped at max_seconds, without raising or hanging."""
+    """Each retry attempt should back off longer, capped at max_seconds."""
     limiter = TokenBucketRateLimiter(capacity=5, refill_rate_per_second=100.0)
     delay_1 = limiter.backoff(attempt=1, base_seconds=0.01, max_seconds=1.0, multiplier=2.0)
     delay_3 = limiter.backoff(attempt=3, base_seconds=0.01, max_seconds=1.0, multiplier=2.0)
@@ -127,7 +130,7 @@ def test_rate_limiter_backoff_increases_with_attempt() -> None:
 
 class _AlwaysTimesOut:
     """Stands in for WebDriverWait: .until() always times out, like a page that never
-    renders .timeline — the shared setup for both classification tests below."""
+    renders .timeline."""
 
     def __init__(self, driver: object, timeout: float) -> None:
         pass
@@ -141,11 +144,8 @@ def _fake_pagination_config() -> SimpleNamespace:
 
 
 def test_iter_result_pages_classifies_challenge_page_as_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression test: a full-page anti-bot challenge (e.g. Anubis's "Making sure
-    you're not a bot!") never renders .timeline, so it always hit the render-timeout
-    branch — meaning the is_soft_blocked() check further down was unreachable for
-    exactly the case it exists to catch, and the host was discarded with no retry
-    instead of getting the backoff cycle that could let the challenge clear."""
+    """A full-page anti-bot challenge never renders .timeline, so it should still be
+    classified as retryable rather than discarding the host outright."""
     monkeypatch.setattr("src.scraper.twitter_scraper.WebDriverWait", _AlwaysTimesOut)
 
     driver = MagicMock()
@@ -157,9 +157,8 @@ def test_iter_result_pages_classifies_challenge_page_as_retryable(monkeypatch: p
 
 
 def test_iter_result_pages_genuinely_dead_host_stays_scrape_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A render timeout with no recognizable challenge page must still raise
-    ScrapeTimeoutError (no retry) — otherwise every genuinely dead/slow host would burn
-    retries pointlessly instead of failing over to the next host quickly."""
+    """A render timeout with no recognizable challenge page should still raise
+    ScrapeTimeoutError (no retry) so a dead host fails over quickly."""
     monkeypatch.setattr("src.scraper.twitter_scraper.WebDriverWait", _AlwaysTimesOut)
 
     driver = MagicMock()
@@ -168,3 +167,27 @@ def test_iter_result_pages_genuinely_dead_host_stays_scrape_timeout(monkeypatch:
 
     with pytest.raises(ScrapeTimeoutError):
         list(iter_result_pages(driver, 1, _fake_pagination_config(), rate_limiter, ["not a bot"]))
+
+
+def test_attempt_host_classifies_urllib3_read_timeout_as_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raw urllib3 ReadTimeoutError from driver.get() (the socket-level timeout on the
+    webdriver connection, distinct from Selenium's own TimeoutException) should back off
+    and exhaust the host like any other stall, not propagate and crash the whole scrape."""
+
+    def _raising_page_iter(*args: object, **kwargs: object):
+        raise URLLib3ReadTimeoutError(None, "http://example.test", "read timed out")
+        yield []  # pragma: no cover
+
+    monkeypatch.setattr("src.scraper.twitter_scraper._new_page_iter", lambda *a, **k: _raising_page_iter())
+
+    settings = load_settings().model_copy(deep=True)
+    settings.scraper.rate_limiter.backoff_base_seconds = 0.001
+    settings.scraper.rate_limiter.backoff_max_seconds = 0.01
+
+    driver = MagicMock()
+    result = _attempt_host(
+        driver, "nifty50", "nitter.example.com", datetime.now(timezone.utc), 10, io.StringIO(), set(), settings
+    )
+
+    assert result["host_exhausted"] is True
+    assert result["backoff_triggered"] is True
