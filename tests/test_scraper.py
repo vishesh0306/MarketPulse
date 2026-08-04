@@ -5,20 +5,24 @@ plus a simulated rate-limit/backoff scenario that doesn't require a live network
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from bs4 import BeautifulSoup
 
-from selenium.common.exceptions import WebDriverException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 
 from src.scraper.anti_detection import is_soft_blocked
-from src.scraper.rate_limiter import TokenBucketRateLimiter
+from src.scraper.rate_limiter import RateLimitedError, TokenBucketRateLimiter
 from src.scraper.twitter_scraper import (
     ParseError,
+    ScrapeTimeoutError,
     _extract_engagement,  # testing this internal directly is the point of the regression test below
     _scrape_one_hashtag,
     build_search_url,
     extract_tweet_fields,
+    iter_result_pages,
 )
 from src.utils.config_loader import load_settings
 
@@ -119,3 +123,48 @@ def test_rate_limiter_backoff_increases_with_attempt() -> None:
     assert delay_1 > 0
     assert delay_3 > delay_1
     assert delay_3 <= 1.0 * 1.2  # respects max_seconds cap plus jitter headroom
+
+
+class _AlwaysTimesOut:
+    """Stands in for WebDriverWait: .until() always times out, like a page that never
+    renders .timeline — the shared setup for both classification tests below."""
+
+    def __init__(self, driver: object, timeout: float) -> None:
+        pass
+
+    def until(self, condition: object) -> None:
+        raise TimeoutException("no such element: .timeline")
+
+
+def _fake_pagination_config() -> SimpleNamespace:
+    return SimpleNamespace(page_render_timeout_seconds=1, min_pause_seconds=0, max_pause_seconds=0)
+
+
+def test_iter_result_pages_classifies_challenge_page_as_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: a full-page anti-bot challenge (e.g. Anubis's "Making sure
+    you're not a bot!") never renders .timeline, so it always hit the render-timeout
+    branch — meaning the is_soft_blocked() check further down was unreachable for
+    exactly the case it exists to catch, and the host was discarded with no retry
+    instead of getting the backoff cycle that could let the challenge clear."""
+    monkeypatch.setattr("src.scraper.twitter_scraper.WebDriverWait", _AlwaysTimesOut)
+
+    driver = MagicMock()
+    driver.page_source = "<html><title>Making sure you're not a bot!</title></html>"
+    rate_limiter = TokenBucketRateLimiter(capacity=5, refill_rate_per_second=100.0)
+
+    with pytest.raises(RateLimitedError):
+        list(iter_result_pages(driver, 1, _fake_pagination_config(), rate_limiter, ["not a bot"]))
+
+
+def test_iter_result_pages_genuinely_dead_host_stays_scrape_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A render timeout with no recognizable challenge page must still raise
+    ScrapeTimeoutError (no retry) — otherwise every genuinely dead/slow host would burn
+    retries pointlessly instead of failing over to the next host quickly."""
+    monkeypatch.setattr("src.scraper.twitter_scraper.WebDriverWait", _AlwaysTimesOut)
+
+    driver = MagicMock()
+    driver.page_source = "<html><body>totally unrelated content</body></html>"
+    rate_limiter = TokenBucketRateLimiter(capacity=5, refill_rate_per_second=100.0)
+
+    with pytest.raises(ScrapeTimeoutError):
+        list(iter_result_pages(driver, 1, _fake_pagination_config(), rate_limiter, ["not a bot"]))

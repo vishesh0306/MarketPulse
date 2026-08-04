@@ -42,6 +42,7 @@ scraper:
       - "Instance has been rate limited"
       - "Make sure you have cookies enabled"
       - "Verifying your browser"
+      - "not a bot"          # e.g. Anubis's "Making sure you're not a bot!" challenge
       - "antibot"
       - "Error 429"
 

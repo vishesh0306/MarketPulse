@@ -171,6 +171,17 @@ def iter_result_pages(
                 EC.presence_of_element_located((By.CLASS_NAME, "timeline"))
             )
         except TimeoutException as exc:
+            # A full-page anti-bot challenge (e.g. an Anubis proof-of-work check) never
+            # renders .timeline at all, so it always times out here rather than reaching
+            # the is_soft_blocked() check below — that check was unreachable for exactly
+            # the case it exists to catch. Classify the timeout by inspecting the page
+            # before giving up: a recognized challenge page is retryable (RateLimitedError
+            # goes through backoff, giving a proof-of-work JS challenge time to resolve);
+            # a genuinely unresponsive host is not (ScrapeTimeoutError, no retry).
+            if is_soft_blocked(driver.page_source, soft_block_indicators):
+                raise RateLimitedError(
+                    "soft-block/anti-bot indicator detected after page-render timeout"
+                ) from exc
             raise ScrapeTimeoutError("timed out waiting for search results to render") from exc
 
         if is_soft_blocked(driver.page_source, soft_block_indicators):
