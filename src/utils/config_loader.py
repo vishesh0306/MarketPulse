@@ -16,6 +16,7 @@ class PaginationConfig(BaseModel):
     min_pause_seconds: float
     max_pause_seconds: float
     max_pages_per_session: int
+    page_render_timeout_seconds: int
 
 
 class RateLimiterConfig(BaseModel):

@@ -24,6 +24,12 @@ scraper:
     min_pause_seconds: 1.5
     max_pause_seconds: 4.5
     max_pages_per_session: 400
+    # How long to wait for search results to render before treating the host as
+    # unhealthy. 10s was too tight under concurrent scraping: 4 hashtags hitting the
+    # same first-listed host at once causes real server-side contention, and the
+    # slowest of the four would occasionally miss a 10s window and trigger an
+    # unnecessary host failover — a self-inflicted false positive, not a bad host.
+    page_render_timeout_seconds: 20
   rate_limiter:
     bucket_capacity: 20        # token bucket size
     refill_rate_per_second: 0.5

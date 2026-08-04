@@ -167,7 +167,9 @@ def iter_result_pages(
     """
     for _ in range(max_pages):
         try:
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "timeline")))
+            WebDriverWait(driver, pagination_config.page_render_timeout_seconds).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "timeline"))
+            )
         except TimeoutException as exc:
             raise ScrapeTimeoutError("timed out waiting for search results to render") from exc
 
