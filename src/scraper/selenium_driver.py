@@ -40,19 +40,17 @@ def get_driver(
     """Yields a configured Chrome WebDriver (randomized user-agent/viewport) and quits it on exit.
 
     Uses an "eager" page-load strategy plus a hard page-load timeout and disabled image
-    loading: we only need DOM text, and waiting on every image/media subresource from a
-    third-party host is what caused observed multi-minute hangs during real collection runs.
+    loading, since only DOM text is needed and waiting on every image/media subresource
+    from a third-party host risks a multi-minute hang.
 
     A global socket-level timeout on the webdriver connection (RemoteConnection.set_timeout)
-    is also set: page_load_timeout only bounds navigation, but a hang can also occur inside
-    chromedriver itself while it waits on browser IPC during an ordinary command like
-    find_elements — observed in practice as a second, longer hang surviving the first fix.
+    is also set: page_load_timeout only bounds navigation, but chromedriver itself can still
+    hang on browser IPC during an ordinary command like find_elements.
 
     driver_path should be pre-resolved via resolve_driver_path() and passed in when multiple
-    get_driver() calls may run concurrently (one per worker process): ChromeDriverManager's
-    own cache-file handling isn't safe under concurrent first-touch access — observed in
-    practice as an intermittent "chromedriver.exe executable may have wrong permissions"
-    error when several hashtags started scraping in the same instant.
+    get_driver() calls may run concurrently (one per worker process), since
+    ChromeDriverManager's own cache-file handling isn't safe under concurrent first-touch
+    access.
     """
     RemoteConnection.set_timeout(_PAGE_LOAD_TIMEOUT_SECONDS)
     width, height = random_viewport()
@@ -67,18 +65,15 @@ def get_driver(
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    # Chrome starts several background services on launch that this scraper never uses
-    # (push-notification/GCM registration, component update checks, sync, USB device
-    # probing) — they fail harmlessly against endpoints we never call, but flood stderr
-    # with unrelated "ERROR:" noise that's easy to mistake for a real scraping problem.
+    # Disable background services this scraper never uses (push notifications, component
+    # update checks, sync, USB probing) — they fail harmlessly but flood stderr with noise.
     options.add_argument("--disable-background-networking")
     options.add_argument("--disable-component-update")
     options.add_argument("--disable-sync")
     options.add_argument("--log-level=3")
-    # Nothing is ever rendered to a screen in headless mode, so GPU hardware
-    # acceleration/compositing is pure overhead — and, observed in practice, a source of
-    # driver-level contention errors (AMD's DirectComposition path) when several Chrome
-    # instances initialize it concurrently. Skip it entirely rather than race on it.
+    # Nothing is rendered to a screen in headless mode, so GPU acceleration/compositing is
+    # pure overhead, and can also cause driver-level contention when several Chrome
+    # instances initialize it concurrently.
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-software-rasterizer")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])

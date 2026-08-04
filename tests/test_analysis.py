@@ -51,11 +51,10 @@ def test_sentiment_score_word_boundary_no_partial_match() -> None:
 
 
 def test_sentiment_lexicon_config_has_no_cancelling_substring_overlap() -> None:
-    """Regression test: config/settings.yaml previously listed bare 'short' as bearish
-    while also listing 'short covering' as bullish — a tweet using the bullish phrase
-    would also match the bearish substring and cancel out. sentiment_score() is a plain
-    lexicon counter with no special-casing for this, so the fix has to be (and is) lexicon
-    curation: no bearish term may be a substring of a bullish term, and vice versa."""
+    """No bearish term may be a substring of a bullish term or vice versa (e.g. bare
+    'short' inside bullish 'short covering'), since sentiment_score() is a plain lexicon
+    counter with no special-casing for overlap — a tweet using the bullish phrase would
+    also match the bearish substring and cancel out."""
     settings = load_settings()
     bullish = settings.analysis.sentiment_lexicon.bullish
     bearish = settings.analysis.sentiment_lexicon.bearish
@@ -133,8 +132,8 @@ def test_bootstrap_ci_narrower_for_larger_sample() -> None:
 
 
 def test_bootstrap_ci_single_tweet_is_not_falsely_narrow() -> None:
-    """Regression test: a single-value bucket must not collapse to zero-width — that would
-    claim maximum confidence exactly where there's the least data to support it."""
+    """A single-value bucket must not collapse to zero-width — that would claim maximum
+    confidence exactly where there's the least data to support it."""
     lo, hi = bootstrap_confidence_interval([0.5], n_resamples=100, confidence_level=0.90, fallback_std=0.3)
     assert hi > lo
 

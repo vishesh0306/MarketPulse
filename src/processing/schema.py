@@ -1,4 +1,4 @@
-"""Typed schema for a processed tweet record, matching ARCHITECTURE.md section 4 exactly."""
+"""Typed schema for a processed tweet record."""
 
 from __future__ import annotations
 

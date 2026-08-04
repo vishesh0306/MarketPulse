@@ -208,10 +208,8 @@ def test_process_raw_files_counts_reconcile(tmp_path: Path, raw_dir: Path) -> No
 
 
 def test_process_raw_files_is_idempotent_across_reruns(tmp_path: Path, raw_dir: Path) -> None:
-    """Regression test: re-running against the same data/raw and output_dir must not
-    accumulate duplicate rows. A prior bug appended new part-*.parquet files on every
-    run without clearing old ones, silently doubling the processed dataset on a second
-    run of the exact same input."""
+    """Re-running against the same data/raw and output_dir must not accumulate duplicate
+    rows — each run should clear prior part-*.parquet files rather than append to them."""
     output_dir = tmp_path / "processed"
     rejects_dir = tmp_path / "processed" / "_rejects"
 
@@ -262,9 +260,8 @@ def test_process_raw_files_writes_readable_parquet(tmp_path: Path, raw_dir: Path
 
 
 def test_process_raw_files_honors_configured_chunk_size(tmp_path: Path) -> None:
-    """ARCHITECTURE.md section 6 claims 'chunked pandas/pyarrow' processing — this proves
-    chunk_size_rows is a real, load-bearing parameter and not just documentation: a small
-    chunk size against a single partition must produce that many separate part files."""
+    """chunk_size_rows should be a load-bearing parameter: a small chunk size against a
+    single partition must produce that many separate part files."""
     raw = tmp_path / "raw"
     raw.mkdir()
     n_records = 5000

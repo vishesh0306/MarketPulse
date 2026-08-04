@@ -85,11 +85,9 @@ def _clear_previous_output(output_dir: Path, rejects_dir: Path) -> None:
     """Removes prior run's Parquet/reject files so each run is an idempotent full rebuild
     from data/raw.
 
-    Without this, re-running storage.py against output_dir that already has data from a
-    previous run silently duplicates every row: part-*.parquet files accumulate (dedup
-    only sees the current run's in-memory seen_ids, not rows already written to disk from
-    an earlier run) — a real regression caught when a second run doubled 1,402 rows to
-    2,804.
+    Without this, re-running against an output_dir with existing data would duplicate
+    every row: part-*.parquet files accumulate, and dedup only sees the current run's
+    in-memory seen_ids, not rows already written to disk from an earlier run.
     """
     if output_dir.exists():
         for path in output_dir.rglob("*.parquet"):

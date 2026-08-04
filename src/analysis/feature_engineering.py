@@ -26,8 +26,7 @@ def fit_tfidf(
     This is the "text-to-numerical-vector" deliverable: a full TF-IDF matrix over the
     corpus. It is fit once per analysis run (batch, not per-bucket) — the composite
     trading signal itself is built from the more directly explainable features below
-    (sentiment/virality/momentum) rather than raw TF-IDF weights, per the tradeoff
-    documented in ARCHITECTURE.md section 3.3 and docs/approach.md.
+    (sentiment/virality/momentum) rather than raw TF-IDF weights.
     """
     stopwords = sorted(ENGLISH_STOP_WORDS.union(extra_stopwords))
     vectorizer = TfidfVectorizer(

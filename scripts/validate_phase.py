@@ -1,7 +1,7 @@
-"""Reads a phase's run-summary JSON from logs/ and prints PASS/FAIL against the mechanically
-checkable items in VALIDATION_CHECKLIST.md. Judgment-only items (e.g. "sentiment scores
-look sane") are out of scope here and are covered by the manual/agent review process
-documented in PROMPTS.md's validation prompts instead.
+"""Reads a phase's run-summary JSON from logs/ and prints PASS/FAIL against the
+mechanically checkable exit criteria for that phase (record-count reconciliation,
+non-zero output, etc.). Judgment-only checks like "do the sentiment scores look sane"
+require reading the actual output and are out of scope here.
 """
 
 from __future__ import annotations

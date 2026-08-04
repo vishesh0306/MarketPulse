@@ -3,12 +3,10 @@
 set -euo pipefail
 
 # Resolve an interpreter directly rather than relying on inherited shell state — a venv
-# activated in a parent PowerShell session does not propagate its PATH into a bash
-# subprocess spawned from it (confirmed: `python` resolves to whatever is first on bash's
-# own PATH, or nothing at all, not the project's venv). Prefer the project's own venv when
-# one exists (local development); fall back to whatever `python`/`python3` is already on
-# PATH otherwise (inside the Docker image, where dependencies are installed directly into
-# the container's system Python and no venv exists at all).
+# activated in a parent PowerShell session doesn't propagate its PATH into a bash
+# subprocess. Prefer the project's own venv when one exists (local development); fall back
+# to whatever python/python3 is already on PATH otherwise (e.g. inside Docker, where
+# dependencies are installed into the container's system Python and no venv exists).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [ -x "$REPO_ROOT/.venv/Scripts/python.exe" ]; then

@@ -7,9 +7,8 @@ scraper:
     - sensex
     - intraday
     - banknifty
-  # x.com's own search UI now redirects unauthenticated requests to a login wall (verified
-  # 2026-08-04), so collection targets Nitter — an open-source, login-free HTML front-end
-  # that surfaces the same public X.com content. No official/paid API, no tweepy, no auth.
+  # x.com's own search UI requires a login. Nitter is an open-source, login-free front-end
+  # for the same public content, so collection targets it instead. No official/paid API.
   # Nitter instances are unofficial and go up/down often, hence the failover list.
   search_path_template: "https://{host}/search?f=tweets&q=%23{hashtag}"
   nitter_hosts:
@@ -25,10 +24,7 @@ scraper:
     max_pause_seconds: 4.5
     max_pages_per_session: 400
     # How long to wait for search results to render before treating the host as
-    # unhealthy. 10s was too tight under concurrent scraping: 4 hashtags hitting the
-    # same first-listed host at once causes real server-side contention, and the
-    # slowest of the four would occasionally miss a 10s window and trigger an
-    # unnecessary host failover — a self-inflicted false positive, not a bad host.
+    # unhealthy. Needs headroom for 4 hashtags hitting the same host concurrently.
     page_render_timeout_seconds: 20
   rate_limiter:
     bucket_capacity: 20        # token bucket size
@@ -79,13 +75,10 @@ analysis:
     sentiment: 0.4
     virality: 0.35
     hashtag_momentum: 0.25
-  # Terms are matched with word-boundary regex against tweet text. Two design rules,
-  # found necessary by spot-checking real scraped tweets (see docs/approach.md):
-  # 1. Avoid single words that are commonly used neutrally/descriptively in trading
-  #    chatter (e.g. bare "resistance"/"support" just labeling a chart level, not making
-  #    a directional call) — prefer more specific multi-word phrases instead.
-  # 2. Avoid terms that are substrings of an opposite-polarity phrase (e.g. bare "short"
-  #    inside bullish "short covering"), which double-counts and cancels out a clear signal.
+  # Terms are matched with word-boundary regex against tweet text. Prefer specific
+  # multi-word phrases over single words that get used neutrally in trading chatter
+  # (e.g. bare "resistance"), and avoid terms that are substrings of an opposite-polarity
+  # phrase (e.g. bare "short" inside bullish "short covering").
   sentiment_lexicon:
     bullish:
       - "breakout"

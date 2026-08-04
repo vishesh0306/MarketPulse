@@ -98,7 +98,7 @@ def test_plot_hashtag_engagement_distribution_writes_file(tmp_path: Path, raw_sa
 
 def test_iter_plot_all_peak_memory_bounded_by_sample_size(tmp_path: Path, bucketed_signals: pd.DataFrame) -> None:
     """Peak memory during plotting should scale with the (bounded) sample size, not with
-    the size of the underlying processed dataset — verified with tracemalloc, not assumed."""
+    the size of the underlying processed dataset."""
     signals_path = tmp_path / "signals.parquet"
     bucketed_signals.to_parquet(signals_path)
 

@@ -19,9 +19,8 @@ def dedup_records(
 ) -> Iterator[dict[str, Any]]:
     """Yields records with exact (tweet_id) and near-duplicate (content_hash) dupes removed.
 
-    Uses in-memory sets of seen IDs/hashes for O(1) average-case lookup per record, per
-    ARCHITECTURE.md section 3.1's data-structure choice — O(n) memory in unique records,
-    not the full dataset held twice.
+    Uses in-memory sets of seen IDs/hashes for O(1) average-case lookup per record —
+    O(n) memory in unique records, not the full dataset held twice.
     """
     seen_ids: set[str] = set()
     seen_hashes: set[str] = set()
