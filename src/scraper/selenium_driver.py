@@ -75,6 +75,12 @@ def get_driver(
     options.add_argument("--disable-component-update")
     options.add_argument("--disable-sync")
     options.add_argument("--log-level=3")
+    # Nothing is ever rendered to a screen in headless mode, so GPU hardware
+    # acceleration/compositing is pure overhead — and, observed in practice, a source of
+    # driver-level contention errors (AMD's DirectComposition path) when several Chrome
+    # instances initialize it concurrently. Skip it entirely rather than race on it.
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-software-rasterizer")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
     options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
