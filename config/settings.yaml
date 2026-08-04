@@ -1,0 +1,102 @@
+# MarketPulse configuration — single source of truth for tunable values.
+# Nothing in src/ should hardcode a value that belongs here.
+
+scraper:
+  hashtags:
+    - nifty50
+    - sensex
+    - intraday
+    - banknifty
+  search_url_template: "https://x.com/search?q=%23{hashtag}&src=typed_query&f=live"
+  hours_lookback: 24
+  min_tweets_target: 2000
+  headless: true
+  worker_pool_size: 4          # ProcessPoolExecutor workers, one hashtag per worker
+  scroll:
+    min_pause_seconds: 1.5
+    max_pause_seconds: 4.5
+    max_scrolls_per_session: 400
+    min_scroll_pixels: 300
+    max_scroll_pixels: 1200
+  rate_limiter:
+    bucket_capacity: 20        # token bucket size
+    refill_rate_per_second: 0.5
+    backoff_base_seconds: 5
+    backoff_max_seconds: 300
+    backoff_multiplier: 2.0
+  anti_detection:
+    rotate_user_agent_every_n_actions: 15
+    soft_block_indicators:
+      - "Something went wrong"
+      - "Try reloading"
+      - "Rate limit exceeded"
+
+storage:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  rejects_dir: "data/processed/_rejects"
+  output_dir: "data/output"
+  signals_dir: "data/output/signals"
+  plots_dir: "data/output/plots"
+  chunk_size_rows: 50000
+  parquet_compression: "snappy"
+  target_part_file_mb: 96
+
+processing:
+  near_duplicate_hash_fields:
+    - text_normalized
+    - username
+
+analysis:
+  tfidf:
+    max_features: 5000
+    ngram_range: [1, 2]
+    min_df: 2
+    stopwords_extra:           # merged with sklearn's English stopwords
+      - "rt"
+      - "amp"
+      - "via"
+  bucket_minutes: 15
+  bootstrap:
+    n_resamples: 500
+    confidence_level: 0.90
+  signal_weights:
+    sentiment: 0.4
+    virality: 0.35
+    hashtag_momentum: 0.25
+  sentiment_lexicon:
+    bullish:
+      - "breakout"
+      - "buy"
+      - "long"
+      - "short covering"
+      - "support held"
+      - "bullish"
+      - "rally"
+      - "upside"
+      - "target hit"
+      - "accumulate"
+    bearish:
+      - "breakdown"
+      - "sell"
+      - "short"
+      - "resistance"
+      - "bearish"
+      - "crash"
+      - "correction"
+      - "downside"
+      - "stop loss hit"
+      - "dump"
+
+aggregation:
+  rollup_windows:
+    - "1H"
+    - "1D"
+
+visualization:
+  reservoir_sample_size: 5000
+  dpi: 120
+
+logging:
+  level: "INFO"
+  dir: "logs"
