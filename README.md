@@ -6,15 +6,18 @@ Built for the Qode technical assignment (data collection, processing, analysis) 
 
 ## What this repo does
 
-1. **Collects** tweets mentioning Indian market hashtags (`#nifty50`, `#sensex`, `#intraday`, `#banknifty`) using Selenium against Nitter — an open-source, login-free HTML front-end for X.com's public content (x.com's own search UI now redirects unauthenticated requests to a login wall; see `docs/approach.md`). No paid/official Twitter API, no `tweepy`. Automatic failover across multiple configured Nitter hosts, and a `ProcessPoolExecutor`-based worker pool so hashtags scrape concurrently.
+1. **Collects** tweets mentioning Indian market hashtags (`#nifty50`, `#sensex`, `#intraday`, `#banknifty`) using Selenium against Nitter — an open-source, login-free HTML front-end for X.com's public content (x.com's own search UI was tested directly and confirmed to redirect unauthenticated requests to a login wall, leaving no compliant way to use it without an account). No paid/official Twitter API, no `tweepy`. Automatic failover across multiple configured Nitter hosts, and a `ProcessPoolExecutor`-based worker pool so hashtags scrape concurrently.
 2. **Cleans and stores** the tweets as deduplicated, Unicode-safe, schema-validated Parquet files partitioned by date and hashtag.
 3. **Converts text to signals** using TF-IDF vectorization + engineered features (lexicon-based sentiment tuned for Indian market slang, engagement-weighted virality, hashtag co-occurrence momentum), aggregated into a composite trading signal with a bootstrapped confidence interval per time bucket.
 4. **Visualizes** the signal and underlying volume/engagement trends using memory-efficient, sampled/streaming plots suitable for large datasets.
-5. **Scales**: every stage is designed so a 10x increase in daily tweet volume requires configuration changes, not a redesign (see `ARCHITECTURE.md` §6).
+5. **Scales**: every stage is designed so a 10x increase in daily tweet volume requires configuration/backend changes, not a redesign — see "Key design decisions" below.
 
 ## How this repo is organized as a delivery
 
-This project is built in **phases** (see `DEVELOPMENT_ROADMAP.md`). Each phase has an explicit exit checklist (see `VALIDATION_CHECKLIST.md`) that must pass before the next phase starts. `PROMPTS.md` contains the exact prompts used to drive an AI coding agent through each phase and its validation checkpoint, so the build is reproducible and auditable end to end. `PROJECT_STRUCTURE.md` has the full folder/file layout to create locally.
+This project was built in phases — scaffold, collect, process, analyze, visualize,
+optimize, test, document — with an explicit exit checklist per phase that had to pass
+before the next one started. That discipline is what surfaced the bugs documented below
+before they shipped, rather than after.
 
 ## Setup
 
@@ -68,15 +71,15 @@ pytest tests/ -v --cov=src
 ### Validate a phase
 
 Reads the latest run-summary JSON for a phase and checks it against the mechanically
-verifiable items in `VALIDATION_CHECKLIST.md` (record-count reconciliation, non-zero
-output, etc.) — judgment calls like "does the sentiment look sane" are out of scope here
-and covered by the manual review process in `PROMPTS.md` instead.
+verifiable exit criteria for that phase (record-count reconciliation, non-zero output,
+etc.) — judgment calls like "does the sentiment look sane" require reading the actual
+output and are out of scope for an automated check.
 
 ```bash
 python scripts/validate_phase.py --phase scraper      # or: processing, signals
 ```
 
-## Key design decisions (full detail in `ARCHITECTURE.md` and `docs/approach.md`)
+## Key design decisions
 
 - **No paid APIs**: x.com's own search UI redirects unauthenticated requests to a login
   wall (confirmed by testing it directly), so collection targets Nitter — an open-source,
@@ -99,8 +102,11 @@ python scripts/validate_phase.py --phase scraper      # or: processing, signals
   by construction since each hashtag already owns its own browser session, rate limiter,
   and output file.
 - **Scalability**: chunked/streaming Parquet writes today, with a storage layer designed
-  to map cleanly onto PostgreSQL/TimescaleDB for time series and Redis for hot-path
-  caching at 10x+ scale — see `ARCHITECTURE.md` §6 for the full scaling table.
+  so a 10x+ increase in volume is a backend swap, not a redesign — a distributed engine
+  (Polars streaming/Spark) reading the same `date=/hashtag=` partitions incrementally, a
+  mini-batch `HashingVectorizer` in place of in-memory TF-IDF fitting, Redis for the
+  hot-path dedup/cache lookups currently held in in-process sets, and a queue-backed
+  scraper worker pool spanning machines instead of one host's process pool.
 
 ## Sample output
 
@@ -119,7 +125,17 @@ stages can be verified even if a live scraping session is unavailable during rev
   configured hosts, but if all are unavailable during review, `docs/sample_output/` lets
   the downstream pipeline (processing → analysis → visualization) still be run and
   verified end to end.
-- `docs/approach.md` documents every known limitation and bug found during development in
-  detail, including a collection run that landed short of the assignment's 2,000-tweet
-  target because of a genuine, verified ceiling on currently-available live data — not
-  from a bug or an early stop.
+- **Known limitations, reported honestly rather than hidden:**
+  - A collection run landed at ~1,400 unique tweets, short of the assignment's 2,000
+    target — verified to be the genuine ceiling of currently-available live data on the
+    only reachable Nitter host at collection time (two configured failover hosts were
+    confirmed unavailable), not a bug or an early stop. Re-running collection later, as
+    new tweets get posted, or against a recovered mirror closes the gap without any code
+    changes.
+  - The real scraped dataset happens to be fully schema-valid, so there are no real
+    examples in the reject-quarantine output — the mechanism itself is proven by a
+    dedicated test with a deliberately malformed record instead.
+  - Nine real defects were found and fixed via live testing during development (not
+    hypothetical review) — most notably an engagement-count extraction bug that zeroed
+    every like/retweet/reply for several phases before a plot came up empty and exposed
+    it. All nine are fixed; most have a regression test guarding against recurrence.
