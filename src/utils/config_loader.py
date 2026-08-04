@@ -12,12 +12,10 @@ from pydantic import BaseModel, Field
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "settings.yaml"
 
 
-class ScrollConfig(BaseModel):
+class PaginationConfig(BaseModel):
     min_pause_seconds: float
     max_pause_seconds: float
-    max_scrolls_per_session: int
-    min_scroll_pixels: int
-    max_scroll_pixels: int
+    max_pages_per_session: int
 
 
 class RateLimiterConfig(BaseModel):
@@ -35,12 +33,13 @@ class AntiDetectionConfig(BaseModel):
 
 class ScraperConfig(BaseModel):
     hashtags: list[str]
-    search_url_template: str
+    search_path_template: str
+    nitter_hosts: list[str]
     hours_lookback: int
     min_tweets_target: int
     headless: bool
     worker_pool_size: int
-    scroll: ScrollConfig
+    pagination: PaginationConfig
     rate_limiter: RateLimiterConfig
     anti_detection: AntiDetectionConfig
 

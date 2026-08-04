@@ -7,17 +7,23 @@ scraper:
     - sensex
     - intraday
     - banknifty
-  search_url_template: "https://x.com/search?q=%23{hashtag}&src=typed_query&f=live"
+  # x.com's own search UI now redirects unauthenticated requests to a login wall (verified
+  # 2026-08-04), so collection targets Nitter — an open-source, login-free HTML front-end
+  # that surfaces the same public X.com content. No official/paid API, no tweepy, no auth.
+  # Nitter instances are unofficial and go up/down often, hence the failover list.
+  search_path_template: "https://{host}/search?f=tweets&q=%23{hashtag}"
+  nitter_hosts:
+    - "nitter.tiekoetter.com"
+    - "xcancel.com"
+    - "nitter.net"
   hours_lookback: 24
   min_tweets_target: 2000
   headless: true
   worker_pool_size: 4          # ProcessPoolExecutor workers, one hashtag per worker
-  scroll:
+  pagination:
     min_pause_seconds: 1.5
     max_pause_seconds: 4.5
-    max_scrolls_per_session: 400
-    min_scroll_pixels: 300
-    max_scroll_pixels: 1200
+    max_pages_per_session: 400
   rate_limiter:
     bucket_capacity: 20        # token bucket size
     refill_rate_per_second: 0.5
@@ -27,9 +33,11 @@ scraper:
   anti_detection:
     rotate_user_agent_every_n_actions: 15
     soft_block_indicators:
-      - "Something went wrong"
-      - "Try reloading"
-      - "Rate limit exceeded"
+      - "Instance has been rate limited"
+      - "Make sure you have cookies enabled"
+      - "Verifying your browser"
+      - "antibot"
+      - "Error 429"
 
 storage:
   raw_dir: "data/raw"
@@ -64,11 +72,18 @@ analysis:
     sentiment: 0.4
     virality: 0.35
     hashtag_momentum: 0.25
+  # Terms are matched with word-boundary regex against tweet text. Two design rules,
+  # found necessary by spot-checking real scraped tweets (see docs/approach.md):
+  # 1. Avoid single words that are commonly used neutrally/descriptively in trading
+  #    chatter (e.g. bare "resistance"/"support" just labeling a chart level, not making
+  #    a directional call) — prefer more specific multi-word phrases instead.
+  # 2. Avoid terms that are substrings of an opposite-polarity phrase (e.g. bare "short"
+  #    inside bullish "short covering"), which double-counts and cancels out a clear signal.
   sentiment_lexicon:
     bullish:
       - "breakout"
       - "buy"
-      - "long"
+      - "long buildup"
       - "short covering"
       - "support held"
       - "bullish"
@@ -79,8 +94,8 @@ analysis:
     bearish:
       - "breakdown"
       - "sell"
-      - "short"
-      - "resistance"
+      - "short buildup"
+      - "rejected at resistance"
       - "bearish"
       - "crash"
       - "correction"
