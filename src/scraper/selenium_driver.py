@@ -67,6 +67,14 @@ def get_driver(
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    # Chrome starts several background services on launch that this scraper never uses
+    # (push-notification/GCM registration, component update checks, sync, USB device
+    # probing) — they fail harmlessly against endpoints we never call, but flood stderr
+    # with unrelated "ERROR:" noise that's easy to mistake for a real scraping problem.
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-component-update")
+    options.add_argument("--disable-sync")
+    options.add_argument("--log-level=3")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
     options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
