@@ -24,8 +24,19 @@ def random_viewport() -> tuple[int, int]:
     return random.choice(_VIEWPORTS)
 
 
+def resolve_driver_path() -> str:
+    """Downloads/verifies the chromedriver binary and returns its local path.
+
+    Meant to be called once in the parent process before spawning a worker pool — see
+    get_driver()'s driver_path parameter for why.
+    """
+    return ChromeDriverManager().install()
+
+
 @contextmanager
-def get_driver(headless: bool = True, user_agent: str | None = None) -> Iterator[WebDriver]:
+def get_driver(
+    headless: bool = True, user_agent: str | None = None, driver_path: str | None = None
+) -> Iterator[WebDriver]:
     """Yields a configured Chrome WebDriver (randomized user-agent/viewport) and quits it on exit.
 
     Uses an "eager" page-load strategy plus a hard page-load timeout and disabled image
@@ -36,6 +47,12 @@ def get_driver(headless: bool = True, user_agent: str | None = None) -> Iterator
     is also set: page_load_timeout only bounds navigation, but a hang can also occur inside
     chromedriver itself while it waits on browser IPC during an ordinary command like
     find_elements — observed in practice as a second, longer hang surviving the first fix.
+
+    driver_path should be pre-resolved via resolve_driver_path() and passed in when multiple
+    get_driver() calls may run concurrently (one per worker process): ChromeDriverManager's
+    own cache-file handling isn't safe under concurrent first-touch access — observed in
+    practice as an intermittent "chromedriver.exe executable may have wrong permissions"
+    error when several hashtags started scraping in the same instant.
     """
     RemoteConnection.set_timeout(_PAGE_LOAD_TIMEOUT_SECONDS)
     width, height = random_viewport()
@@ -54,7 +71,7 @@ def get_driver(headless: bool = True, user_agent: str | None = None) -> Iterator
     options.add_experimental_option("useAutomationExtension", False)
     options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
 
-    service = Service(ChromeDriverManager().install())
+    service = Service(driver_path or resolve_driver_path())
     driver = webdriver.Chrome(service=service, options=options)
     try:
         driver.set_page_load_timeout(_PAGE_LOAD_TIMEOUT_SECONDS)

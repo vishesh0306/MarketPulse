@@ -26,7 +26,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from src.scraper.anti_detection import is_soft_blocked
 from src.scraper.rate_limiter import RateLimitedError, TokenBucketRateLimiter
-from src.scraper.selenium_driver import get_driver
+from src.scraper.selenium_driver import get_driver, resolve_driver_path
 from src.utils.config_loader import Settings, load_settings
 from src.utils.logger import get_logger, write_run_summary
 
@@ -404,7 +404,7 @@ def scrape_hashtag(
 
 
 def _scrape_one_hashtag(
-    hashtag: str, hours: int, min_tweets: int, output_path: Path, settings: Settings
+    hashtag: str, hours: int, min_tweets: int, output_path: Path, settings: Settings, driver_path: str
 ) -> dict[str, Any]:
     """Runs one hashtag's full scrape in its own browser session — the unit of work
     submitted to the worker pool. Defined at module level (not nested/lambda) so it's
@@ -413,11 +413,13 @@ def _scrape_one_hashtag(
     Safe to run concurrently with other hashtags: each call gets its own Selenium
     session, its own rate limiter, its own in-memory dedup sets (scoped inside
     scrape_hashtag), and writes only to its own hashtag-specific output file — there is
-    no mutable state shared across hashtags that would need locking.
+    no mutable state shared across hashtags that would need locking. driver_path is
+    pre-resolved once by the caller (see main()) rather than re-resolved here, since
+    ChromeDriverManager's cache isn't safe under several workers touching it at once.
     """
     logger.info("starting hashtag scrape", extra={"extra_fields": {"hashtag": hashtag}})
     try:
-        with get_driver(headless=settings.scraper.headless) as driver:
+        with get_driver(headless=settings.scraper.headless, driver_path=driver_path) as driver:
             return scrape_hashtag(driver, hashtag, hours, min_tweets, output_path, settings)
     except (ScrapeTimeoutError, WebDriverException) as exc:
         logger.error(
@@ -453,6 +455,10 @@ def main() -> None:
 
     worker_count = max(1, min(args.workers or settings.scraper.worker_pool_size, len(hashtags)))
 
+    # Resolved once, here, before any worker starts — see get_driver()'s docstring for
+    # why concurrent workers each resolving their own driver path is unsafe.
+    driver_path = resolve_driver_path()
+
     summaries: list[dict[str, Any]] = []
     with ProcessPoolExecutor(max_workers=worker_count) as executor:
         futures = {
@@ -463,6 +469,7 @@ def main() -> None:
                 per_hashtag_target,
                 raw_dir / f"{hashtag}_{run_timestamp}.jsonl",
                 settings,
+                driver_path,
             ): hashtag
             for hashtag in hashtags
         }

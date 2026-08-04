@@ -91,13 +91,13 @@ def test_scrape_one_hashtag_handles_driver_failure_gracefully(tmp_path: Path, mo
     return a well-formed summary dict, not raise — otherwise one hashtag's failure would
     take down the whole ProcessPoolExecutor.map/as_completed loop in main()."""
 
-    def _raise_driver_error(headless: bool):  # noqa: ARG001
+    def _raise_driver_error(headless: bool, driver_path: str):  # noqa: ARG001
         raise WebDriverException("could not start browser")
 
     monkeypatch.setattr("src.scraper.twitter_scraper.get_driver", _raise_driver_error)
 
     settings = load_settings()
-    summary = _scrape_one_hashtag("nifty50", 24, 10, tmp_path / "nifty50.jsonl", settings)
+    summary = _scrape_one_hashtag("nifty50", 24, 10, tmp_path / "nifty50.jsonl", settings, "fake-driver-path")
 
     assert summary["hashtag"] == "nifty50"
     assert summary["collected"] == 0
