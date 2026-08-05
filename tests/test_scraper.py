@@ -144,6 +144,38 @@ def _fake_pagination_config() -> SimpleNamespace:
     return SimpleNamespace(page_render_timeout_seconds=1, min_pause_seconds=0, max_pause_seconds=0)
 
 
+class _AlwaysReady:
+    """Stands in for WebDriverWait: .until() succeeds immediately."""
+
+    def __init__(self, driver: object, timeout: float) -> None:
+        pass
+
+    def until(self, condition: object) -> None:
+        return None
+
+
+def test_iter_result_pages_extracts_cards_from_page_source_without_per_card_round_trip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card HTML comes from parsing the single page_source fetch (shared with the
+    soft-block check) — not a separate find_elements() plus a per-card
+    get_attribute("outerHTML") WebDriver round trip for every tweet card on the page."""
+    monkeypatch.setattr("src.scraper.twitter_scraper.WebDriverWait", _AlwaysReady)
+
+    driver = MagicMock()
+    driver.page_source = FIXTURE_PATH.read_text(encoding="utf-8")
+    driver.find_elements.return_value = []  # no "Load more" link -> stop after this page
+    rate_limiter = TokenBucketRateLimiter(capacity=5, refill_rate_per_second=100.0)
+
+    pages = list(iter_result_pages(driver, 1, _fake_pagination_config(), rate_limiter, ["not a real indicator"]))
+
+    assert len(pages) == 1
+    assert len(pages[0]) > 0
+    # find_elements is only called once, for the "Load more" link check — never for
+    # timeline-item cards, and never followed by a per-card get_attribute round trip.
+    assert driver.find_elements.call_count == 1
+
+
 def test_iter_result_pages_classifies_challenge_page_as_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
     """A full-page anti-bot challenge never renders .timeline, so it should still be
     classified as retryable rather than discarding the host outright."""

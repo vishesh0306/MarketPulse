@@ -241,6 +241,69 @@ def test_process_raw_files_is_idempotent_across_reruns(tmp_path: Path, raw_dir: 
     assert df["tweet_id"].duplicated().sum() == 0
 
 
+def test_process_raw_files_quarantines_malformed_json_line_instead_of_crashing(tmp_path: Path) -> None:
+    """A single corrupt line in a raw file must not abort the whole run — it should be
+    quarantined like any other invalid record, with the rest of the file still processed."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    good_record = {
+        "tweet_id": "1", "username": "trader1", "created_at": "2026-08-04T12:00:00+00:00",
+        "text": "Nifty breakout above resistance", "likes": 1, "retweets": 0, "replies": 0,
+        "mentions": [], "hashtags": ["nifty50"], "source_hashtag": "nifty50",
+        "collected_at": "2026-08-04T12:05:00+00:00",
+    }
+    with (raw / "nifty50_test.jsonl").open("w", encoding="utf-8") as f:
+        f.write(json.dumps(good_record) + "\n")
+        f.write("{not valid json at all\n")
+
+    output_dir = tmp_path / "processed"
+    rejects_dir = tmp_path / "processed" / "_rejects"
+    summary = process_raw_files(
+        raw, output_dir, chunk_size_rows=50, rejects_dir=rejects_dir,
+        near_duplicate_fields=["text_normalized", "username"], compression="snappy",
+    )
+
+    assert summary["in"] == 2
+    assert summary["out"] == 1
+    assert summary["rejected"] == 1
+    reject_files = list(rejects_dir.glob("*.jsonl"))
+    rejected = [json.loads(line) for path in reject_files for line in path.read_text(encoding="utf-8").splitlines()]
+    assert any("malformed_json" in r["_reject_reason"] for r in rejected)
+
+
+def test_process_raw_files_leaves_previous_output_intact_if_a_later_run_fails(
+    tmp_path: Path, raw_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that fails partway through must not have already deleted the previous run's
+    good output — otherwise a transient failure turns into permanent data loss."""
+    output_dir = tmp_path / "processed"
+    rejects_dir = tmp_path / "processed" / "_rejects"
+
+    first = process_raw_files(
+        raw_dir, output_dir, chunk_size_rows=50, rejects_dir=rejects_dir,
+        near_duplicate_fields=["text_normalized", "username"], compression="snappy",
+    )
+    assert first["out"] > 0
+    rows_before = pd.read_parquet(output_dir)
+
+    import src.processing.storage as storage_module
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated failure partway through the run")
+
+    monkeypatch.setattr(storage_module, "_write_chunk", _boom)
+
+    with pytest.raises(RuntimeError):
+        process_raw_files(
+            raw_dir, output_dir, chunk_size_rows=50, rejects_dir=rejects_dir,
+            near_duplicate_fields=["text_normalized", "username"], compression="snappy",
+        )
+
+    rows_after = pd.read_parquet(output_dir)
+    assert len(rows_after) == len(rows_before)
+    assert sorted(rows_after["tweet_id"]) == sorted(rows_before["tweet_id"])
+
+
 def test_process_raw_files_quarantines_invalid_record_with_reason(tmp_path: Path, raw_dir: Path) -> None:
     output_dir = tmp_path / "processed"
     rejects_dir = tmp_path / "processed" / "_rejects"

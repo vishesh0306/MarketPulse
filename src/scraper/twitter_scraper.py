@@ -192,11 +192,15 @@ def iter_result_pages(
                 ) from exc
             raise ScrapeTimeoutError("timed out waiting for search results to render") from exc
 
-        if is_soft_blocked(driver.page_source, soft_block_indicators):
+        # One page_source fetch serves both the soft-block check and card extraction —
+        # find_elements() + a per-card get_attribute("outerHTML") would cost a separate
+        # WebDriver round-trip per tweet card on the page; parsing the same already-
+        # fetched HTML with BeautifulSoup costs nothing extra.
+        page_source = driver.page_source
+        if is_soft_blocked(page_source, soft_block_indicators):
             raise RateLimitedError("soft-block/anti-bot indicator detected in page source")
 
-        cards = driver.find_elements(By.CLASS_NAME, "timeline-item")
-        cards_html = [html for card in cards if (html := card.get_attribute("outerHTML")) is not None]
+        cards_html = [str(card) for card in BeautifulSoup(page_source, "html.parser").find_all(class_="timeline-item")]
         if cards_html:
             yield cards_html
 

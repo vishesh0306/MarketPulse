@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import tracemalloc
 import uuid
 from collections import defaultdict
@@ -43,13 +44,21 @@ PARQUET_SCHEMA = pa.schema(
 )
 
 
-def _iter_raw_records(input_dir: Path) -> Iterator[dict[str, Any]]:
+def _iter_raw_records(input_dir: Path) -> Iterator[tuple[dict[str, Any] | None, str | None]]:
+    """Yields (record, error) pairs. A malformed line yields (None, error) instead of
+    raising, so it quarantines like any other invalid record instead of aborting the
+    whole run partway through — with the previous run's output already gone.
+    """
     for path in sorted(input_dir.glob("*.jsonl")):
         with path.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if line:
-                    yield json.loads(line)
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line), None
+                except json.JSONDecodeError as exc:
+                    yield None, f"malformed_json: {exc}"
 
 
 def _clean_record(raw: dict[str, Any]) -> dict[str, Any]:
@@ -81,20 +90,27 @@ def _write_chunk(chunk: list[dict[str, Any]], output_dir: Path, compression: str
         pq.write_table(table, part_path, compression=compression)
 
 
-def _clear_previous_output(output_dir: Path, rejects_dir: Path) -> None:
-    """Removes prior run's Parquet/reject files so each run is an idempotent full rebuild
-    from data/raw.
+def _tmp_sibling(path: Path) -> Path:
+    return path.parent / f".{path.name}.tmp"
 
-    Without this, re-running against an output_dir with existing data would duplicate
-    every row: part-*.parquet files accumulate, and dedup only sees the current run's
-    in-memory seen_ids, not rows already written to disk from an earlier run.
+
+def _replace_directory(tmp_dir: Path, final_dir: Path) -> None:
+    """Swaps tmp_dir into final_dir's place, atomically per directory rename.
+
+    final_dir's previous contents stay intact right up until tmp_dir (the fully-written
+    new output) is ready to take its place, so a crash partway through a run — a
+    malformed input record that somehow still got past validation, a full disk, anything
+    — never leaves less output on disk than there was before the run started, the way
+    clearing output_dir up front before writing anything new would.
     """
-    if output_dir.exists():
-        for path in output_dir.rglob("*.parquet"):
-            path.unlink()
-    if rejects_dir.exists():
-        for path in rejects_dir.glob("*.jsonl"):
-            path.unlink()
+    backup_dir = final_dir.parent / f".{final_dir.name}.bak"
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    if final_dir.exists():
+        final_dir.rename(backup_dir)
+    tmp_dir.rename(final_dir)
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
 
 
 def _flush_rejects(buffer: list[tuple[str, dict[str, Any]]], rejects_dir: Path) -> None:
@@ -122,18 +138,45 @@ def process_raw_files(
     """Runs the full clean -> validate -> dedup -> write pipeline over all raw JSONL files.
 
     Processes in chunks (default from config) rather than loading the full raw dataset
-    into memory at once. Idempotent: clears any previous run's output first, so re-running
-    against the same data/raw always reproduces the same row count rather than
-    accumulating duplicates. Returns a run-summary dict (counts in/out/rejected/deduped).
+    into memory at once. Idempotent: writes to a temporary directory and only swaps it
+    into place once the run completes, so re-running against the same data/raw always
+    reproduces the same row count rather than accumulating duplicates, and a run that
+    fails partway through leaves the previous output untouched rather than deleted.
+    Returns a run-summary dict (counts in/out/rejected/deduped).
     """
-    _clear_previous_output(output_dir, rejects_dir)
+    tmp_output_dir = _tmp_sibling(output_dir)
+    if tmp_output_dir.exists():
+        shutil.rmtree(tmp_output_dir)
+    tmp_output_dir.mkdir(parents=True)
+
+    # rejects_dir is nested under output_dir by default (output_dir/_rejects), in which
+    # case one swap of tmp_output_dir carries it along; otherwise it gets its own.
+    rejects_nested = rejects_dir == output_dir or output_dir in rejects_dir.parents
+    if rejects_nested:
+        tmp_rejects_dir = tmp_output_dir / rejects_dir.relative_to(output_dir)
+    else:
+        tmp_rejects_dir = _tmp_sibling(rejects_dir)
+        if tmp_rejects_dir.exists():
+            shutil.rmtree(tmp_rejects_dir)
+        tmp_rejects_dir.mkdir(parents=True)
+
     counts = {"in": 0, "out": 0, "rejected": 0}
     reject_reason_counts: dict[str, int] = defaultdict(int)
     reject_buffer: list[tuple[str, dict[str, Any]]] = []
 
     def validated_stream() -> Iterator[dict[str, Any]]:
-        for raw in _iter_raw_records(input_dir):
+        for raw, parse_error in _iter_raw_records(input_dir):
             counts["in"] += 1
+            if parse_error is not None:
+                counts["rejected"] += 1
+                bucket = _reject_bucket(parse_error)
+                reject_reason_counts[bucket] += 1
+                reject_buffer.append((bucket, {"_reject_reason": parse_error}))
+                if len(reject_buffer) >= chunk_size_rows:
+                    _flush_rejects(reject_buffer, tmp_rejects_dir)
+                    reject_buffer.clear()
+                continue
+            assert raw is not None  # parse_error is None, so json.loads succeeded
             cleaned = _clean_record(raw)
             is_valid, reason = validate(cleaned)
             if not is_valid:
@@ -142,7 +185,7 @@ def process_raw_files(
                 reject_reason_counts[bucket] += 1
                 reject_buffer.append((bucket, {**cleaned, "_reject_reason": reason}))
                 if len(reject_buffer) >= chunk_size_rows:
-                    _flush_rejects(reject_buffer, rejects_dir)
+                    _flush_rejects(reject_buffer, tmp_rejects_dir)
                     reject_buffer.clear()
                 continue
             yield cleaned
@@ -153,11 +196,15 @@ def process_raw_files(
         chunk.append(typed_record)
         counts["out"] += 1
         if len(chunk) >= chunk_size_rows:
-            _write_chunk(chunk, output_dir, compression)
+            _write_chunk(chunk, tmp_output_dir, compression)
             chunk.clear()
 
-    _write_chunk(chunk, output_dir, compression)
-    _flush_rejects(reject_buffer, rejects_dir)
+    _write_chunk(chunk, tmp_output_dir, compression)
+    _flush_rejects(reject_buffer, tmp_rejects_dir)
+
+    _replace_directory(tmp_output_dir, output_dir)
+    if not rejects_nested:
+        _replace_directory(tmp_rejects_dir, rejects_dir)
 
     # Derived rather than separately tracked, so the in = out + rejected + deduped
     # invariant holds by construction instead of by two counters staying in sync.
