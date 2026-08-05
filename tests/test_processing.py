@@ -113,21 +113,34 @@ def test_content_hash_deterministic() -> None:
 
 def test_dedup_records_removes_exact_tweet_id_duplicate() -> None:
     records = [
-        {"tweet_id": "1", "text_normalized": "hello", "username": "u1"},
-        {"tweet_id": "1", "text_normalized": "hello", "username": "u1"},
-        {"tweet_id": "2", "text_normalized": "world", "username": "u2"},
+        {"tweet_id": "1", "source_hashtag": "nifty50", "text_normalized": "hello", "username": "u1"},
+        {"tweet_id": "1", "source_hashtag": "nifty50", "text_normalized": "hello", "username": "u1"},
+        {"tweet_id": "2", "source_hashtag": "nifty50", "text_normalized": "world", "username": "u2"},
     ]
     result = list(dedup_records(records, ["text_normalized", "username"]))
     assert [r["tweet_id"] for r in result] == ["1", "2"]
+
+
+def test_dedup_records_keeps_same_tweet_under_different_source_hashtag() -> None:
+    """A tweet mentioning both #nifty50 and #banknifty is collected once per hashtag
+    search, same tweet_id, different source_hashtag each time. Keying dedup on tweet_id
+    alone would drop the second copy and erase the tweet from one hashtag's partition
+    entirely; keying on (tweet_id, source_hashtag) keeps both."""
+    records = [
+        {"tweet_id": "1", "source_hashtag": "banknifty", "text_normalized": "hello", "username": "u1"},
+        {"tweet_id": "1", "source_hashtag": "nifty50", "text_normalized": "hello", "username": "u1"},
+    ]
+    result = list(dedup_records(records, ["text_normalized", "username", "source_hashtag"]))
+    assert [r["source_hashtag"] for r in result] == ["banknifty", "nifty50"]
 
 
 def test_dedup_records_removes_near_duplicate_content() -> None:
     """Deliberately-inserted duplicate: different tweet_id, identical normalized text
     and author — must be caught by the near-duplicate hash layer, not just exact-ID dedup."""
     records = [
-        {"tweet_id": "100", "text_normalized": "nifty breakout", "username": "trader1"},
-        {"tweet_id": "101", "text_normalized": "nifty breakout", "username": "trader1"},
-        {"tweet_id": "102", "text_normalized": "different content", "username": "trader1"},
+        {"tweet_id": "100", "source_hashtag": "nifty50", "text_normalized": "nifty breakout", "username": "trader1"},
+        {"tweet_id": "101", "source_hashtag": "nifty50", "text_normalized": "nifty breakout", "username": "trader1"},
+        {"tweet_id": "102", "source_hashtag": "nifty50", "text_normalized": "different content", "username": "trader1"},
     ]
     result = list(dedup_records(records, ["text_normalized", "username"]))
     assert [r["tweet_id"] for r in result] == ["100", "102"]

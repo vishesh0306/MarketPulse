@@ -12,6 +12,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Repo root isn't on sys.path when this is run directly (python scripts/validate_phase.py)
+# rather than as a module, since Python only adds the script's own directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.utils.config_loader import load_settings  # noqa: E402
+
 CheckResult = tuple[bool, str]
 
 
@@ -24,7 +30,8 @@ def find_latest_summary(log_dir: Path, phase: str) -> Path | None:
 def _check_scraper(summary: dict[str, Any]) -> list[CheckResult]:
     checks: list[CheckResult] = []
     total = summary.get("total_collected", 0)
-    checks.append((total > 0, f"total_collected > 0 (got {total})"))
+    target = summary.get("min_tweets_target") or load_settings().scraper.min_tweets_target
+    checks.append((total >= target, f"total_collected >= min_tweets_target ({total}/{target})"))
 
     per_hashtag = summary.get("per_hashtag", [])
     hashtags_with_data = [entry["hashtag"] for entry in per_hashtag if entry.get("collected", 0) > 0]

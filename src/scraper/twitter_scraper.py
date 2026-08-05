@@ -28,7 +28,7 @@ from src.scraper.anti_detection import is_soft_blocked
 from src.scraper.rate_limiter import RateLimitedError, TokenBucketRateLimiter
 from src.scraper.selenium_driver import get_driver, resolve_driver_path
 from src.utils.config_loader import Settings, load_settings
-from src.utils.logger import get_logger, write_run_summary
+from src.utils.logger import get_logger, set_level, write_run_summary
 
 logger = get_logger("twitter_scraper")
 
@@ -101,34 +101,46 @@ def _extract_engagement(card: Tag) -> dict[str, int]:
     return counts
 
 
+def _as_tag(node: Any) -> Tag | None:
+    """Narrows a bs4 find() result (Tag | NavigableString | None) down to Tag | None.
+
+    A class/tag-name search should never actually match a bare NavigableString (bs4 only
+    returns those for text-content searches), but the stubs type find() as if it could —
+    and NavigableString is itself a str subclass, so an un-narrowed result silently
+    resolves to str.find()'s signature instead of Tag's. Treated as no match either way.
+    """
+    return node if isinstance(node, Tag) else None
+
+
 def extract_tweet_fields(card_html: str, source_hashtag: str) -> dict[str, Any]:
     """Parses one Nitter timeline-item's HTML into username, timestamp, text, engagement,
     mentions, and hashtags. Pure function so it's testable offline against
     tests/fixtures/search_results.html.
     """
     soup = BeautifulSoup(card_html, "html.parser")
-    card = soup.find(class_="timeline-item") or soup
+    card = _as_tag(soup.find(class_="timeline-item")) or soup
 
-    permalink = card.find("a", class_="tweet-link", href=True)
+    permalink = _as_tag(card.find("a", class_="tweet-link", href=True))
     if permalink is None:
         permalink = next(
-            (a for a in card.find_all("a", href=True) if _STATUS_LINK_RE.match(a["href"])), None
+            (a for a in card.find_all("a", href=True) if isinstance(a, Tag) and _STATUS_LINK_RE.match(str(a["href"]))),
+            None,
         )
-    match = _STATUS_LINK_RE.match(permalink["href"]) if permalink else None
+    match = _STATUS_LINK_RE.match(str(permalink["href"])) if permalink else None
     if match is None:
         raise ParseError("no status permalink (username/tweet_id) found in tweet card")
     username, tweet_id = match.group(1), match.group(2)
 
-    date_span = card.find(class_="tweet-date")
-    time_link = date_span.find("a") if date_span else None
+    date_span = _as_tag(card.find(class_="tweet-date"))
+    time_link = _as_tag(date_span.find("a")) if date_span else None
     if time_link is None or not time_link.get("title"):
         raise ParseError(f"no timestamp found for tweet {tweet_id}")
     try:
-        created_at = _parse_nitter_timestamp(time_link["title"])
+        created_at = _parse_nitter_timestamp(str(time_link["title"]))
     except ValueError as exc:
         raise ParseError(f"unparseable timestamp for tweet {tweet_id}: {time_link['title']!r}") from exc
 
-    content_node = card.find(class_="tweet-content")
+    content_node = _as_tag(card.find(class_="tweet-content"))
     if content_node:
         # separator=" " prevents adjacent inline tags (e.g. a mention link followed
         # directly by text) from merging into one token when strip=True trims each
@@ -394,8 +406,12 @@ def scrape_hashtag(
             errors.extend(result["errors"])
             backoff_triggered = backoff_triggered or result["backoff_triggered"]
 
-            if collected >= min_tweets or not result["host_exhausted"]:
+            if collected >= min_tweets:
                 break
+            # A host can stop short of min_tweets without being "exhausted" (rate-limited)
+            # at all — it can just legitimately run out of pages, or hit the lookback
+            # cutoff, before yielding enough tweets. Either way, still under target means
+            # still worth trying the next configured host rather than stopping here.
             logger.info(
                 "falling back to next Nitter host",
                 extra={"extra_fields": {"hashtag": hashtag, "exhausted_host": host}},
@@ -447,14 +463,20 @@ def _scrape_one_hashtag(
 
 
 def main() -> None:
+    settings = load_settings()
+    set_level(logger, settings.logging.level)
+
     parser = argparse.ArgumentParser(description="Scrape Indian market-hashtag tweets via Nitter/Selenium.")
-    parser.add_argument("--hashtags", type=str, required=True, help="Comma-separated hashtags, no '#'.")
-    parser.add_argument("--hours", type=int, default=24, help="Lookback window in hours.")
-    parser.add_argument("--min-tweets", type=int, default=2000, help="Minimum total tweets to collect.")
+    parser.add_argument(
+        "--hashtags", type=str, default=",".join(settings.scraper.hashtags), help="Comma-separated hashtags, no '#'."
+    )
+    parser.add_argument("--hours", type=int, default=settings.scraper.hours_lookback, help="Lookback window in hours.")
+    parser.add_argument(
+        "--min-tweets", type=int, default=settings.scraper.min_tweets_target, help="Minimum total tweets to collect."
+    )
     parser.add_argument("--workers", type=int, default=None, help="Worker pool size (default: config value).")
     args = parser.parse_args()
 
-    settings = load_settings()
     hashtags = [tag.strip().lstrip("#") for tag in args.hashtags.split(",") if tag.strip()]
     per_hashtag_target = max(1, args.min_tweets // len(hashtags))
 

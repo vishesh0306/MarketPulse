@@ -27,6 +27,7 @@ from src.scraper.twitter_scraper import (
     build_search_url,
     extract_tweet_fields,
     iter_result_pages,
+    scrape_hashtag,
 )
 from src.utils.config_loader import load_settings
 
@@ -191,3 +192,24 @@ def test_attempt_host_classifies_urllib3_read_timeout_as_retryable(monkeypatch: 
 
     assert result["host_exhausted"] is True
     assert result["backoff_triggered"] is True
+
+
+def test_scrape_hashtag_tries_next_host_even_when_previous_not_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host that returns cleanly (ran out of pages, not rate-limited) but with far
+    fewer tweets than min_tweets must still fail over to the next configured host,
+    rather than treating "not exhausted" as "done, stop trying more hosts"."""
+    settings = load_settings()
+    calls: list[str] = []
+
+    def _fake_attempt_host(driver, hashtag, host, cutoff, remaining_target, out_file, seen_ids, settings):  # noqa: ARG001
+        calls.append(host)
+        return {"collected": 1, "parse_errors": 0, "errors": [], "backoff_triggered": False, "host_exhausted": False}
+
+    monkeypatch.setattr("src.scraper.twitter_scraper._attempt_host", _fake_attempt_host)
+
+    summary = scrape_hashtag(MagicMock(), "nifty50", 24, 10, tmp_path / "nifty50.jsonl", settings)
+
+    assert calls == settings.scraper.nitter_hosts
+    assert summary["collected"] == len(settings.scraper.nitter_hosts)
