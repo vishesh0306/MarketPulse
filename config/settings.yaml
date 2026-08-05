@@ -33,7 +33,6 @@ scraper:
     backoff_max_seconds: 300
     backoff_multiplier: 2.0
   anti_detection:
-    rotate_user_agent_every_n_actions: 15
     soft_block_indicators:
       - "Instance has been rate limited"
       - "Make sure you have cookies enabled"
@@ -51,12 +50,15 @@ storage:
   plots_dir: "data/output/plots"
   chunk_size_rows: 50000
   parquet_compression: "snappy"
-  target_part_file_mb: 96
 
 processing:
+  # source_hashtag included so a tweet legitimately collected under two target hashtags
+  # (identical text and author each time) isn't caught by this layer either — see
+  # deduplicator.py's docstring for why exact-ID dedup keys on the same pair.
   near_duplicate_hash_fields:
     - text_normalized
     - username
+    - source_hashtag
 
 analysis:
   tfidf:
@@ -68,9 +70,15 @@ analysis:
       - "amp"
       - "via"
   bucket_minutes: 15
+  # NSE trades 09:15-15:30 IST, Mon-Fri. Off-hours chatter stays in data/processed, but
+  # bucketing it into the trading signal mostly measures conversation volume at 2am, not
+  # market sentiment — and those thin off-hours buckets are the ones with the widest,
+  # least meaningful confidence intervals.
+  filter_market_hours: true
   bootstrap:
     n_resamples: 500
     confidence_level: 0.90
+    random_seed: 42
   signal_weights:
     sentiment: 0.4
     virality: 0.35

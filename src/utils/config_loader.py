@@ -5,9 +5,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
+
+ParquetCompression = Literal["snappy", "gzip", "brotli", "lz4", "zstd"]
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "settings.yaml"
 
@@ -28,7 +31,6 @@ class RateLimiterConfig(BaseModel):
 
 
 class AntiDetectionConfig(BaseModel):
-    rotate_user_agent_every_n_actions: int
     soft_block_indicators: list[str]
 
 
@@ -53,8 +55,7 @@ class StorageConfig(BaseModel):
     signals_dir: str
     plots_dir: str
     chunk_size_rows: int
-    parquet_compression: str
-    target_part_file_mb: int
+    parquet_compression: ParquetCompression
 
 
 class ProcessingConfig(BaseModel):
@@ -71,6 +72,7 @@ class TfidfConfig(BaseModel):
 class BootstrapConfig(BaseModel):
     n_resamples: int
     confidence_level: float
+    random_seed: int
 
 
 class SentimentLexicon(BaseModel):
@@ -84,6 +86,7 @@ class AnalysisConfig(BaseModel):
     bootstrap: BootstrapConfig
     signal_weights: dict[str, float]
     sentiment_lexicon: SentimentLexicon
+    filter_market_hours: bool
 
 
 class AggregationConfig(BaseModel):

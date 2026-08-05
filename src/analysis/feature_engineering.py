@@ -55,30 +55,68 @@ def _term_pattern(term: str) -> re.Pattern[str]:
     return pattern
 
 
+_NEGATION_WINDOW = 3
+_NEGATION_WORDS = {
+    "no", "not", "never", "avoid", "don't", "dont", "won't", "wont",
+    "isn't", "isnt", "wasn't", "wasnt", "aren't", "arent", "ain't", "aint", "without",
+}
+
+
+def _is_negated(text_normalized: str, match_start: int) -> bool:
+    """True if a negation word appears in the _NEGATION_WINDOW words before match_start.
+
+    A fixed-width window is a standard, simple heuristic for this — it will occasionally
+    over-negate a word past the intended scope (e.g. "don't buy the rally" negates both
+    "buy" and "rally"), but that's a reasonable tradeoff against not handling negation at
+    all, which scores "not a buy at these levels" as maximally bullish.
+    """
+    preceding = text_normalized[:match_start].split()[-_NEGATION_WINDOW:]
+    return any(word.strip(".,!?;:'\"") in _NEGATION_WORDS for word in preceding)
+
+
 def sentiment_score(text_normalized: str, bullish_terms: list[str], bearish_terms: list[str]) -> float:
-    """Lexicon-based sentiment in [-1, 1] from bullish/bearish term matches.
+    """Lexicon-based sentiment in [-1, 1] from bullish/bearish term matches, with negation
+    flipping a match's polarity when preceded by a negation word.
 
     (bullish_count - bearish_count) / (bullish_count + bearish_count); 0.0 when no
     lexicon terms match (neutral/unknown, not a guess in either direction).
     """
-    bullish_count = sum(1 for term in bullish_terms if _term_pattern(term).search(text_normalized))
-    bearish_count = sum(1 for term in bearish_terms if _term_pattern(term).search(text_normalized))
+    bullish_count = 0
+    bearish_count = 0
+    for term in bullish_terms:
+        match = _term_pattern(term).search(text_normalized)
+        if match is None:
+            continue
+        if _is_negated(text_normalized, match.start()):
+            bearish_count += 1
+        else:
+            bullish_count += 1
+    for term in bearish_terms:
+        match = _term_pattern(term).search(text_normalized)
+        if match is None:
+            continue
+        if _is_negated(text_normalized, match.start()):
+            bullish_count += 1
+        else:
+            bearish_count += 1
     total = bullish_count + bearish_count
     if total == 0:
         return 0.0
     return (bullish_count - bearish_count) / total
 
 
-def hashtag_momentum(bucket_hashtags: list[list[str]]) -> dict[str, float]:
+def hashtag_momentum(bucket_hashtags: list[list[str]], target_hashtags: set[str]) -> dict[str, float]:
     """Co-occurrence momentum per hashtag within a time bucket: the average number of
-    *other* target hashtags each tweet mentioning this hashtag also mentions. Higher means
-    more cross-hashtag chatter — a proxy for a broader market conversation, not just one
-    hashtag's own volume.
+    *other* target hashtags (from target_hashtags, e.g. the 4 configured scrape hashtags)
+    each tweet mentioning this hashtag also mentions. Higher means more cross-hashtag
+    market chatter, not just one hashtag's own volume — restricted to target hashtags so
+    a tweet stuffed with unrelated tags (#trading #wealth #investing) doesn't read as
+    elevated momentum.
     """
     co_occurrence_totals: Counter[str] = Counter()
     occurrence_counts: Counter[str] = Counter()
     for tags in bucket_hashtags:
-        unique_tags = set(tags)
+        unique_tags = set(tags) & target_hashtags
         for tag in unique_tags:
             occurrence_counts[tag] += 1
             co_occurrence_totals[tag] += len(unique_tags) - 1
