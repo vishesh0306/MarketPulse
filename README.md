@@ -4,10 +4,12 @@ MarketPulse collects Indian stock-market discussion from Twitter/X, cleans and s
 
 ## What it does
 
-1. Scrapes tweets for `#nifty50`, `#sensex`, `#intraday`, and `#banknifty` using Selenium — no paid or official Twitter API.
+1. Scrapes tweets for `#nifty50`, `#sensex`, `#intraday`, and `#banknifty` with Selenium against [Nitter](https://github.com/zedeus/nitter), a login-free mirror of X.com's public content — no paid or official Twitter API.
 2. Cleans, deduplicates, and stores the tweets as partitioned Parquet files.
-3. Converts tweet text into a composite trading signal per hashtag (TF-IDF, sentiment, engagement, hashtag momentum) with a bootstrapped confidence interval per time bucket.
+3. Converts tweet text into a composite trading signal per hashtag (TF-IDF, sentiment, engagement, hashtag momentum), filtered to NSE trading hours, with a bootstrapped confidence interval per time bucket.
 4. Plots volume, signal, and engagement trends.
+
+Collection targets 2,000 tweets in 24 hours; actual counts depend on live availability of the (unofficial, rate-limited) Nitter mirrors at run time.
 
 ## Setup
 
