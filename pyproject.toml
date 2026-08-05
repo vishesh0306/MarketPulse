@@ -1,0 +1,14 @@
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+
+# pyarrow, scipy, scikit-learn and joblib don't ship type stubs and have no maintained
+# types-* package, unlike pandas/PyYAML/beautifulsoup4 (installed as real stub packages
+# in requirements.txt). Ignored per-module rather than globally, so a real stub gap in
+# project code still fails the check.
+[[tool.mypy.overrides]]
+module = ["pyarrow.*", "scipy.*", "sklearn.*", "joblib.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

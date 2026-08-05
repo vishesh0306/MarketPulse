@@ -52,6 +52,13 @@ def get_logger(name: str, log_dir: str | Path = "logs", level: str = "INFO") -> 
     return logger
 
 
+def set_level(logger: logging.Logger, level: str) -> None:
+    """Applies a log level from config. get_logger() itself always defaults to INFO,
+    since it's called at module import time, before config/settings.yaml is loaded.
+    """
+    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+
+
 def write_run_summary(
     log_dir: str | Path,
     phase: str,

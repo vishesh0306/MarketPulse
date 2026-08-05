@@ -19,7 +19,7 @@ import pandas as pd
 import pyarrow.dataset as ds
 
 from src.utils.config_loader import load_settings
-from src.utils.logger import get_logger, write_run_summary
+from src.utils.logger import get_logger, set_level, write_run_summary
 
 logger = get_logger("streaming_plots")
 
@@ -200,6 +200,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = load_settings()
+    set_level(logger, settings.logging.level)
     signals_path = Path(args.input) / "signals" / "signals.parquet"
     plots_dir = Path(settings.storage.plots_dir)
     plots_dir.mkdir(parents=True, exist_ok=True)

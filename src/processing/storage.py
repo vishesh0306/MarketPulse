@@ -20,7 +20,7 @@ from src.processing.cleaner import clean_text, detect_lang_hint, normalize_for_f
 from src.processing.deduplicator import dedup_records
 from src.processing.schema import TweetRecord, validate
 from src.utils.config_loader import load_settings
-from src.utils.logger import get_logger, write_run_summary
+from src.utils.logger import get_logger, set_level, write_run_summary
 
 logger = get_logger("processing_storage")
 
@@ -173,6 +173,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = load_settings()
+    set_level(logger, settings.logging.level)
     input_dir = Path(args.input)
     output_dir = Path(args.output)
     rejects_dir = Path(settings.storage.rejects_dir)
