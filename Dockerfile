@@ -18,4 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["bash", "scripts/run_pipeline.sh"]
+# sync + a short pause before exit: Docker Desktop's bind-mount write-back cache can still
+# have pending writes when the container's main process exits, and --rm tears the
+# container down immediately after — without this, output written late in the run
+# (parquet files, plots) can be lost from the host side even though the run itself
+# succeeded.
+CMD ["bash", "-c", "bash scripts/run_pipeline.sh; sync; sleep 8"]
