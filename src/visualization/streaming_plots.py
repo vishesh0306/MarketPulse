@@ -25,10 +25,23 @@ logger = get_logger("streaming_plots")
 
 T = TypeVar("T")
 
-# Fixed categorical color order (first four slots of the validated default palette),
-# assigned to hashtags in a stable order so the same hashtag is always the same color
-# across all three plots — never re-cycled per axes.
-_CATEGORICAL_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
+# Fixed categorical color order, assigned to hashtags in a stable order so the same
+# hashtag is always the same color across all three plots — never re-cycled per axes.
+# Needs at least as many entries as hashtags tracked: with the assignment's four plus the
+# related set, four colors meant #nifty and #stockmarket rendered identically and the
+# legend stopped being readable.
+_CATEGORICAL_COLORS = [
+    "#2a78d6",  # blue
+    "#eb6834",  # orange
+    "#1baf7a",  # green
+    "#eda100",  # amber
+    "#8b5cf6",  # violet
+    "#e0518a",  # pink
+    "#0d9aa8",  # teal
+    "#7a8b3d",  # olive
+    "#b5533c",  # rust
+    "#5b6b8c",  # slate
+]
 
 _SURFACE = "#fcfcfb"
 _INK_PRIMARY = "#0b0b0b"

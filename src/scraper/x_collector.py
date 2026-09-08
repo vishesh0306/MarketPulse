@@ -41,25 +41,41 @@ class MissingCredentialsError(RuntimeError):
     """Raised when no X session cookies are available to authenticate with."""
 
 
-def build_query(hashtag: str, hours: int, *, now: datetime | None = None) -> str:
-    """Builds an x.com search query for one hashtag over the last `hours`.
+def window_bounds(
+    hours: float, offset_hours: float = 0.0, *, now: datetime | None = None
+) -> tuple[datetime, datetime]:
+    """The [start, end] the collector should keep, as a window ending `offset_hours` ago
+    and spanning `hours` back from there.
+
+    offset_hours=0 gives the plain "last N hours". A non-zero offset targets an earlier
+    slice — e.g. the NSE cash session, which is a fixed band of the day rather than the
+    most recent N hours. Paging blindly from "now" spends the rate-limit budget on
+    post-close chatter before it ever reaches the session.
+    """
+    now = now or datetime.now(timezone.utc)
+    end = now - timedelta(hours=offset_hours)
+    return end - timedelta(hours=hours), end
+
+
+def build_query(hashtag: str, hours: float, offset_hours: float = 0.0, *, now: datetime | None = None) -> str:
+    """Builds an x.com search query for one hashtag over the requested window.
 
     Uses `since_time`/`until_time` (unix seconds) rather than `since:`/`until:` — the date
-    form has day granularity, which can't express a 24-hour rolling window.
+    form has day granularity, which can't express a rolling sub-day window.
 
     Note these operators are a *hint*, not a guarantee: x.com still slips pinned and
     popular older tweets into results (an observed run came back with a 2023 tweet). The
-    lookback is therefore enforced again client-side in `within_window`, which is what
-    actually keeps the output inside the 24 hours the assignment asks for.
+    window is therefore enforced again client-side in `within_window`, which is what
+    actually keeps the output inside the range the assignment asks for.
     """
-    now = now or datetime.now(timezone.utc)
-    since = int((now - timedelta(hours=hours)).timestamp())
-    until = int(now.timestamp())
-    return f"#{hashtag} since_time:{since} until_time:{until}"
+    start, end = window_bounds(hours, offset_hours, now=now)
+    return f"#{hashtag} since_time:{int(start.timestamp())} until_time:{int(end.timestamp())}"
 
 
-def within_window(created_at_iso: str, hours: int, *, now: datetime | None = None) -> bool:
-    """True if an ISO timestamp falls inside the last `hours`. The authoritative lookback
+def within_window(
+    created_at_iso: str, hours: float, offset_hours: float = 0.0, *, now: datetime | None = None
+) -> bool:
+    """True if an ISO timestamp falls inside the requested window. The authoritative
     check — see build_query for why x.com's own operators can't be trusted alone."""
     now = now or datetime.now(timezone.utc)
     try:
@@ -68,7 +84,9 @@ def within_window(created_at_iso: str, hours: int, *, now: datetime | None = Non
         return False
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
-    return (now - timedelta(hours=hours)) <= created <= (now + timedelta(minutes=5))
+    start, end = window_bounds(hours, offset_hours, now=now)
+    # Small forward tolerance absorbs clock skew between x.com and this machine.
+    return start <= created <= (end + timedelta(minutes=5))
 
 
 def tweet_to_record(tweet: Any, source_hashtag: str, *, collected_at: datetime | None = None) -> dict[str, Any]:
@@ -145,20 +163,25 @@ async def build_api(cookies: str, db_path: str, account_label: str) -> Any:
     return api
 
 
-async def _iter_hashtag(api: Any, hashtag: str, hours: int, limit: int) -> AsyncIterator[Any]:
+async def _iter_hashtag(
+    api: Any, hashtag: str, hours: float, offset_hours: float, limit: int
+) -> AsyncIterator[Any]:
     # product=Latest forces the chronological tab; the "Top" tab reorders by engagement
     # and pulls in older popular tweets, which is the opposite of what a 24h window wants.
-    async for tweet in api.search(build_query(hashtag, hours), limit=limit, kv={"product": "Latest"}):
+    async for tweet in api.search(
+        build_query(hashtag, hours, offset_hours), limit=limit, kv={"product": "Latest"}
+    ):
         yield tweet
 
 
 async def collect_hashtag(
     api: Any,
     hashtag: str,
-    hours: int,
+    hours: float,
     output_path: Path,
     *,
     remaining: Callable[[], int],
+    offset_hours: float = 0.0,
     per_hashtag_cap: int = _DEFAULT_PER_HASHTAG_CAP,
 ) -> dict[str, Any]:
     """Streams one hashtag's tweets to JSONL, stopping when the run-wide target is met.
@@ -179,14 +202,14 @@ async def collect_hashtag(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with output_path.open("a", encoding="utf-8") as out_file:
-            async for tweet in _iter_hashtag(api, hashtag, hours, per_hashtag_cap):
+            async for tweet in _iter_hashtag(api, hashtag, hours, offset_hours, per_hashtag_cap):
                 if collected >= remaining():
                     break
                 record = tweet_to_record(tweet, hashtag)
                 if record["tweet_id"] in seen_ids:
                     continue
                 seen_ids.add(record["tweet_id"])
-                if not within_window(str(record["created_at"]), hours):
+                if not within_window(str(record["created_at"]), hours, offset_hours):
                     out_of_window += 1
                     continue
                 out_file.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -242,12 +265,13 @@ def _empty_summary(hashtag: str) -> dict[str, Any]:
 
 async def collect(
     hashtags: list[str],
-    hours: int,
+    hours: float,
     min_tweets: int,
     raw_dir: Path,
     run_timestamp: str,
     *,
     api: Any,
+    offset_hours: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Runs every hashtag against x.com until the run-wide target is met."""
     total = 0
@@ -261,7 +285,12 @@ async def collect(
             summaries.append(_empty_summary(hashtag))
             continue
         summary = await collect_hashtag(
-            api, hashtag, hours, raw_dir / f"{hashtag}_{run_timestamp}.jsonl", remaining=remaining
+            api,
+            hashtag,
+            hours,
+            raw_dir / f"{hashtag}_{run_timestamp}.jsonl",
+            remaining=remaining,
+            offset_hours=offset_hours,
         )
         total += int(summary["collected"])
         summaries.append(summary)
@@ -279,6 +308,7 @@ async def _run(args: argparse.Namespace, settings: Settings, hashtags: list[str]
         Path(settings.storage.raw_dir),
         run_timestamp,
         api=api,
+        offset_hours=args.offset_hours,
     )
 
 
@@ -288,7 +318,14 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Collect Indian market tweets from x.com via twscrape.")
     parser.add_argument("--hashtags", type=str, default=",".join(settings.scraper.all_hashtags))
-    parser.add_argument("--hours", type=int, default=settings.scraper.hours_lookback)
+    parser.add_argument("--hours", type=float, default=settings.scraper.hours_lookback)
+    parser.add_argument(
+        "--offset-hours",
+        type=float,
+        default=0.0,
+        help="End the window this many hours before now (0 = last --hours). Lets a run "
+        "target an earlier slice such as the NSE session instead of paging from now.",
+    )
     parser.add_argument("--min-tweets", type=int, default=settings.scraper.min_tweets_target)
     parser.add_argument("--cookies", type=str, default=None, help="auth_token=...; ct0=... (else read from env)")
     parser.add_argument("--accounts-db", type=str, default="accounts.db", help="twscrape account store path")
@@ -317,6 +354,7 @@ def main() -> None:
             "source": "x.com (twscrape)",
             "hashtags": hashtags,
             "hours_lookback": args.hours,
+            "offset_hours": args.offset_hours,
             "min_tweets_target": args.min_tweets,
             "total_collected": total_collected,
             "per_hashtag": summaries,

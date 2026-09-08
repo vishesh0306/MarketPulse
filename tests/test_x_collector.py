@@ -90,6 +90,25 @@ def test_build_query_window_width_matches_hours() -> None:
     assert until - since == 6 * 3600
 
 
+def test_build_query_offset_targets_an_earlier_slice() -> None:
+    """A window ending `offset_hours` ago — used to hit the NSE session directly instead
+    of burning rate-limit budget paging back through post-close chatter."""
+    q = build_query("nifty50", 6.25, 8.4, now=_NOW)
+    since = int(q.split("since_time:")[1].split()[0])
+    until = int(q.split("until_time:")[1])
+    assert until == int((_NOW - timedelta(hours=8.4)).timestamp())
+    assert until - since == int(6.25 * 3600)
+
+
+def test_within_window_respects_offset() -> None:
+    inside = (_NOW - timedelta(hours=10)).isoformat()      # within the 8.4h-14.65h band
+    too_recent = (_NOW - timedelta(hours=2)).isoformat()   # after the window closed
+    too_old = (_NOW - timedelta(hours=20)).isoformat()     # before it opened
+    assert within_window(inside, 6.25, 8.4, now=_NOW) is True
+    assert within_window(too_recent, 6.25, 8.4, now=_NOW) is False
+    assert within_window(too_old, 6.25, 8.4, now=_NOW) is False
+
+
 # ---- within_window --------------------------------------------------------
 
 
