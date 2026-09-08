@@ -353,7 +353,7 @@ async def collect(
     *,
     api: Any,
     offset_hours: float = 0.0,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int]:
     """Runs every hashtag against x.com until the run-wide target is met.
 
     The target counts *distinct tweets*, not rows. A tweet carrying two tracked hashtags
@@ -397,10 +397,12 @@ async def collect(
                 }
             },
         )
-    return summaries
+    return summaries, len(run_unique_ids)
 
 
-async def _run(args: argparse.Namespace, settings: Settings, hashtags: list[str], run_timestamp: str) -> list[dict[str, Any]]:
+async def _run(
+    args: argparse.Namespace, settings: Settings, hashtags: list[str], run_timestamp: str
+) -> tuple[list[dict[str, Any]], int]:
     cookies = resolve_cookies(args.cookies)
     api = await build_api(cookies, args.accounts_db, args.account_label)
     return await collect(
@@ -442,12 +444,12 @@ def main() -> None:
     Path(settings.storage.raw_dir).mkdir(parents=True, exist_ok=True)
 
     try:
-        summaries = asyncio.run(_run(args, settings, hashtags, run_timestamp))
+        summaries, unique_tweets = asyncio.run(_run(args, settings, hashtags, run_timestamp))
     except MissingCredentialsError as exc:
         logger.error("missing credentials", extra={"extra_fields": {"error": str(exc)}})
         sys.exit(2)
 
-    total_collected = sum(int(s["collected"]) for s in summaries)
+    rows_written = sum(int(s["collected"]) for s in summaries)
     summary_path = write_run_summary(
         settings.logging.dir,
         "scraper",
@@ -458,23 +460,35 @@ def main() -> None:
             "hours_lookback": args.hours,
             "offset_hours": args.offset_hours,
             "min_tweets_target": args.min_tweets,
-            "total_collected": total_collected,
+            # The target counts distinct tweets, so that is what gets reported and
+            # checked. rows_written runs ahead of it because a tweet carrying two
+            # tracked hashtags is written once under each.
+            "total_collected": unique_tweets,
+            "unique_tweets": unique_tweets,
+            "rows_written": rows_written,
             "per_hashtag": summaries,
         },
     )
     logger.info(
         "collection run complete",
-        extra={"extra_fields": {"total_collected": total_collected, "summary_path": str(summary_path)}},
+        extra={
+            "extra_fields": {
+                "unique_tweets": unique_tweets,
+                "rows_written": rows_written,
+                "summary_path": str(summary_path),
+            }
+        },
     )
 
-    if total_collected < args.min_tweets and not args.allow_shortfall:
+    if unique_tweets < args.min_tweets and not args.allow_shortfall:
         logger.error(
             "collected fewer tweets than required",
             extra={
                 "extra_fields": {
-                    "total_collected": total_collected,
+                    "unique_tweets": unique_tweets,
+                    "rows_written": rows_written,
                     "min_tweets": args.min_tweets,
-                    "shortfall": args.min_tweets - total_collected,
+                    "shortfall": args.min_tweets - unique_tweets,
                 }
             },
         )

@@ -263,9 +263,14 @@ async def test_target_counts_distinct_tweets_not_rows(tmp_path: Path) -> None:
     shared = [_tweet(1), _tweet(2), _tweet(3)]  # same three tweets under every hashtag
     api = _FakeAPI(shared)
 
-    summaries = await collect(["nifty50", "sensex", "intraday"], 24, 5, tmp_path, "20260908T120000Z", api=api)
+    summaries, unique = await collect(
+        ["nifty50", "sensex", "intraday"], 24, 5, tmp_path, "20260908T120000Z", api=api
+    )
 
     rows = sum(int(s["collected"]) for s in summaries)
+    # What gets reported and shortfall-checked must be the gated quantity, not rows —
+    # otherwise a run of 9 rows over 3 tweets would look like it beat a target of 5.
+    assert unique == 3 and rows == 9
     distinct = len({json.loads(line)["tweet_id"]
                     for f in tmp_path.glob("*.jsonl")
                     for line in f.read_text(encoding="utf-8").splitlines()})
@@ -309,7 +314,7 @@ async def test_collect_shares_the_target_across_hashtags(tmp_path: Path) -> None
     """A dense hashtag should cover for the rest: once the run-wide target is met, later
     hashtags are skipped rather than each chasing its own slice."""
     api = _FakeAPI([_tweet(i) for i in range(1, 21)])
-    summaries = await collect(["nifty50", "sensex", "intraday"], 24, 5, tmp_path, "20260908T120000Z", api=api)
+    summaries, _ = await collect(["nifty50", "sensex", "intraday"], 24, 5, tmp_path, "20260908T120000Z", api=api)
 
     assert sum(int(s["collected"]) for s in summaries) == 5
     assert summaries[0]["collected"] == 5
@@ -319,5 +324,6 @@ async def test_collect_shares_the_target_across_hashtags(tmp_path: Path) -> None
 
 async def test_collect_spreads_across_hashtags_when_each_is_thin(tmp_path: Path) -> None:
     api = _FakeAPI([_tweet(1), _tweet(2)])
-    summaries = await collect(["nifty50", "sensex"], 24, 10, tmp_path, "20260908T120000Z", api=api)
+    summaries, unique = await collect(["nifty50", "sensex"], 24, 10, tmp_path, "20260908T120000Z", api=api)
     assert [s["collected"] for s in summaries] == [2, 2]
+    assert unique == 2, "same two tweets under both hashtags is 2 distinct, not 4"

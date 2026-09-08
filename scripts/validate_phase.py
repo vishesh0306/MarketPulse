@@ -29,9 +29,15 @@ def find_latest_summary(log_dir: Path, phase: str) -> Path | None:
 
 def _check_scraper(summary: dict[str, Any]) -> list[CheckResult]:
     checks: list[CheckResult] = []
-    total = summary.get("total_collected", 0)
+    # Count distinct tweets, not rows. A tweet carrying two tracked hashtags is written
+    # once under each, so rows run ahead of tweets — checking rows would pass a run whose
+    # corpus is well short of the target. Older summaries only carry total_collected.
+    unique = summary.get("unique_tweets", summary.get("total_collected", 0))
     target = summary.get("min_tweets_target") or load_settings().scraper.min_tweets_target
-    checks.append((total >= target, f"total_collected >= min_tweets_target ({total}/{target})"))
+    label = "unique_tweets" if "unique_tweets" in summary else "total_collected"
+    checks.append((unique >= target, f"{label} >= min_tweets_target ({unique}/{target})"))
+    if "rows_written" in summary:
+        print(f"[INFO] {summary['rows_written']} rows written for {unique} distinct tweets")
 
     # A hashtag that collected nothing is only a problem if it was actually *tried*.
     # Collection shares one run-wide target, so once it's met the remaining hashtags are
