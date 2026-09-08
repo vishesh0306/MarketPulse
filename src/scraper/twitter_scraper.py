@@ -580,7 +580,27 @@ def main() -> None:
                 for hashtag in hashtags
             }
             for future in as_completed(futures):
-                summaries.append(future.result())
+                hashtag = futures[future]
+                try:
+                    summaries.append(future.result())
+                except Exception as exc:
+                    # One worker crashing (a bug, a killed process, a broken pool) must
+                    # not discard the summaries for the hashtags that succeeded — record
+                    # it and carry on so the run summary and the shortfall check still run.
+                    logger.exception(
+                        "hashtag worker crashed", extra={"extra_fields": {"hashtag": hashtag, "error": str(exc)}}
+                    )
+                    summaries.append(
+                        {
+                            "hashtag": hashtag,
+                            "collected": 0,
+                            "unique_ids": 0,
+                            "parse_errors": 0,
+                            "errors": [f"worker crashed: {exc}"],
+                            "backoff_triggered": False,
+                            "hosts_tried": [],
+                        }
+                    )
 
     total_collected = sum(summary["collected"] for summary in summaries)
 

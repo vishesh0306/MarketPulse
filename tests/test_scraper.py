@@ -312,7 +312,10 @@ class _SerialExecutor:
 
     def submit(self, fn, *args, **kwargs):  # type: ignore[no-untyped-def]
         future: Future = Future()
-        future.set_result(fn(*args, **kwargs))
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as exc:  # noqa: BLE001 — mirror Executor: exceptions land on the future
+            future.set_exception(exc)
         return future
 
 
@@ -371,3 +374,41 @@ def test_main_exits_zero_when_target_met(monkeypatch: pytest.MonkeyPatch, tmp_pa
         monkeypatch, tmp_path, per_hashtag_collected=50, argv=["--hashtags", "nifty50,sensex", "--min-tweets", "100"]
     )
     assert code == 0
+
+
+def test_main_survives_one_worker_crashing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """If one hashtag's worker raises an unexpected exception, the run must still record
+    a summary for the hashtags that succeeded rather than aborting with a traceback."""
+    written: dict[str, object] = {}
+
+    def _flaky_scrape_one(hashtag, hours, min_tweets, output_path, settings, driver_path):  # noqa: ARG001
+        if hashtag == "sensex":
+            raise RuntimeError("worker blew up")
+        return {
+            "hashtag": hashtag,
+            "collected": 40,
+            "unique_ids": 40,
+            "parse_errors": 0,
+            "errors": [],
+            "backoff_triggered": False,
+            "hosts_tried": ["nitter.example.com"],
+        }
+
+    monkeypatch.setattr("src.scraper.twitter_scraper.ProcessPoolExecutor", _SerialExecutor)
+    monkeypatch.setattr("src.scraper.twitter_scraper.resolve_driver_path", lambda: "fake-driver-path")
+    monkeypatch.setattr("src.scraper.twitter_scraper._scrape_one_hashtag", _flaky_scrape_one)
+    monkeypatch.setattr(
+        "src.scraper.twitter_scraper.write_run_summary",
+        lambda log_dir, phase, payload: written.update(payload) or (tmp_path / "summary.json"),
+    )
+    monkeypatch.setattr(sys, "argv", ["twitter_scraper", "--hashtags", "nifty50,sensex", "--min-tweets", "100"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1  # 40 < 100 -> still a shortfall
+    assert written["total_collected"] == 40
+    per_hashtag = {entry["hashtag"]: entry for entry in written["per_hashtag"]}
+    assert per_hashtag["nifty50"]["collected"] == 40
+    assert per_hashtag["sensex"]["collected"] == 0
+    assert per_hashtag["sensex"]["errors"]
