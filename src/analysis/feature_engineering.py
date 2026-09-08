@@ -11,7 +11,7 @@ import pandas as pd
 from scipy.sparse import spmatrix
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, TfidfVectorizer
 
-from src.utils.config_loader import AnalysisConfig
+from src.utils.config_loader import AnalysisConfig, SentimentLexicon
 
 
 def fit_tfidf(
@@ -46,11 +46,25 @@ def virality_score(likes: int, retweets: int, replies: int) -> float:
 
 _WORD_BOUNDARY_CACHE: dict[str, re.Pattern[str]] = {}
 
+# Devanagari block. Needed in the boundary class below because Python's `\w` covers
+# letters but not the spacing combining marks (category Mc) that Devanagari uses for
+# vowel signs — so `\b` finds no boundary after a word ending in a matra.
+_DEVANAGARI = r"ऀ-ॿ"
+
 
 def _term_pattern(term: str) -> re.Pattern[str]:
+    """Compiles a cached, script-aware whole-word matcher for a lexicon term.
+
+    `\\b` is wrong here: most Hindi sentiment words end in a vowel sign (तेजी, मंदी), which
+    is a combining mark and therefore not a `\\w` character, so `\\bतेजी\\b` never matches —
+    silently, on every Devanagari tweet. Matching "not preceded/followed by a word char or
+    a Devanagari char" instead gets both scripts right: तेजी matches inside a sentence but
+    not inside मंदीरा, and breakout still doesn't match inside breakoutish.
+    """
     pattern = _WORD_BOUNDARY_CACHE.get(term)
     if pattern is None:
-        pattern = re.compile(r"\b" + re.escape(term.lower()) + r"\b")
+        escaped = re.escape(term.lower())
+        pattern = re.compile(rf"(?<![\w{_DEVANAGARI}]){escaped}(?![\w{_DEVANAGARI}])")
         _WORD_BOUNDARY_CACHE[term] = pattern
     return pattern
 
@@ -141,6 +155,27 @@ def hashtag_momentum(bucket_hashtags: list[list[str]], target_hashtags: set[str]
     }
 
 
+def lexicons_for(lang_hint: str, lexicon: SentimentLexicon) -> tuple[list[str], list[str]]:
+    """Selects which term lists to run against a tweet, based on its detected script.
+
+    This is what `lang_hint` is for. A pure-Devanagari tweet can't match a Latin term and
+    vice versa, so routing is both a correctness statement and a saving of ~20 regex
+    passes on the ~94% of tweets that are Latin-only.
+
+      en    -> Latin terms (English + Romanised Hindi)
+      hi    -> Devanagari terms only; there is no Latin text to match
+      mixed -> both, since the tweet genuinely contains both scripts
+    """
+    if lang_hint == "hi":
+        return lexicon.bullish_devanagari, lexicon.bearish_devanagari
+    if lang_hint == "mixed":
+        return (
+            [*lexicon.bullish, *lexicon.bullish_devanagari],
+            [*lexicon.bearish, *lexicon.bearish_devanagari],
+        )
+    return lexicon.bullish, lexicon.bearish
+
+
 def build_feature_frame(df: pd.DataFrame, config: AnalysisConfig) -> pd.DataFrame:
     """Assembles per-tweet engineered features (virality, normalized virality, sentiment).
 
@@ -155,10 +190,21 @@ def build_feature_frame(df: pd.DataFrame, config: AnalysisConfig) -> pd.DataFram
     v_range = (v_max - v_min) or 1.0
     out["virality_norm"] = (out["virality"] - v_min) / v_range
 
-    bullish = config.sentiment_lexicon.bullish
-    bearish = config.sentiment_lexicon.bearish
-    out["sentiment"] = out["text_normalized"].apply(lambda t: sentiment_score(t, bullish, bearish))
-    out["sentiment_matched"] = out["text_normalized"].apply(lambda t: sentiment_lexicon_hit(t, bullish, bearish))
+    # Route each tweet to the lexicon for its script (see lexicons_for). lang_hint is set
+    # by the cleaner during processing; anything missing it is treated as Latin-only.
+    lexicon = config.sentiment_lexicon
+    lang = out["lang_hint"] if "lang_hint" in out.columns else pd.Series("en", index=out.index)
+
+    def _score(text: str, hint: str) -> float:
+        bull, bear = lexicons_for(hint, lexicon)
+        return sentiment_score(text, bull, bear)
+
+    def _matched(text: str, hint: str) -> bool:
+        bull, bear = lexicons_for(hint, lexicon)
+        return sentiment_lexicon_hit(text, bull, bear)
+
+    out["sentiment"] = [_score(t, h) for t, h in zip(out["text_normalized"], lang)]
+    out["sentiment_matched"] = [_matched(t, h) for t, h in zip(out["text_normalized"], lang)]
 
     return out
 

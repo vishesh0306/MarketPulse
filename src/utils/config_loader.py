@@ -88,8 +88,13 @@ class BootstrapConfig(BaseModel):
 
 
 class SentimentLexicon(BaseModel):
+    # Latin-script terms: English plus Romanised Hindi ("tezi", "mandi").
     bullish: list[str]
     bearish: list[str]
+    # Devanagari-script terms, applied only to tweets whose lang_hint says the script is
+    # actually present. Empty is fine.
+    bullish_devanagari: list[str] = []
+    bearish_devanagari: list[str] = []
 
 
 class AnalysisConfig(BaseModel):

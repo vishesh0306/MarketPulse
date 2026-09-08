@@ -10,8 +10,10 @@ import pytest
 
 from src.analysis.aggregator import rollup
 from src.analysis.feature_engineering import (
+    build_feature_frame,
     fit_tfidf,
     hashtag_momentum,
+    lexicons_for,
     sentiment_score,
     virality_score,
 )
@@ -23,7 +25,7 @@ from src.analysis.signal_generator import (
     composite_signal,
     generate_signals,
 )
-from src.utils.config_loader import load_settings
+from src.utils.config_loader import SentimentLexicon, load_settings
 
 # ---- feature_engineering ---------------------------------------------------
 
@@ -76,6 +78,54 @@ def test_sentiment_lexicon_config_has_no_cancelling_substring_overlap() -> None:
 
     score = sentiment_score("short covering rally in banknifty", bullish, bearish)
     assert score == 1.0
+
+
+def test_sentiment_matches_devanagari_words_ending_in_a_vowel_sign() -> None:
+    """Regression: `\\b` finds no boundary after a Devanagari matra (ी is a combining mark,
+    not a `\\w` char), so `\\bतेजी\\b` silently never matched — and most Hindi sentiment
+    words end in one. Every Devanagari tweet scored exactly neutral because of it."""
+    bullish, bearish = ["तेजी", "मजबूत"], ["मंदी", "गिरावट"]
+    assert sentiment_score("बाजार में तेजी है", bullish, bearish) == 1.0
+    assert sentiment_score("आज मंदी का दौर", bullish, bearish) == -1.0
+    assert sentiment_score("भारी गिरावट दर्ज", bullish, bearish) == -1.0
+
+
+def test_devanagari_terms_still_respect_word_boundaries() -> None:
+    """The looser boundary must not turn into substring matching."""
+    assert sentiment_score("मंदीरा एक नाम है", ["तेजी"], ["मंदी"]) == 0.0
+
+
+def test_latin_boundaries_unaffected_by_the_devanagari_fix() -> None:
+    assert sentiment_score("breakoutish nonsense", ["breakout"], ["breakdown"]) == 0.0
+    assert sentiment_score("nifty breakout now", ["breakout"], ["breakdown"]) == 1.0
+
+
+def test_lexicons_for_routes_on_lang_hint() -> None:
+    lex = SentimentLexicon(
+        bullish=["breakout"], bearish=["breakdown"],
+        bullish_devanagari=["तेजी"], bearish_devanagari=["मंदी"],
+    )
+    assert lexicons_for("en", lex) == (["breakout"], ["breakdown"])
+    assert lexicons_for("hi", lex) == (["तेजी"], ["मंदी"])
+    bull, bear = lexicons_for("mixed", lex)
+    assert bull == ["breakout", "तेजी"] and bear == ["breakdown", "मंदी"]
+
+
+def test_build_feature_frame_scores_hindi_tweets_via_lang_hint() -> None:
+    """End to end: a Devanagari bullish tweet must score positive, not neutral."""
+    settings = load_settings()
+    df = pd.DataFrame(
+        [
+            {"text_normalized": "बाजार में तेजी है", "lang_hint": "hi", "likes": 1, "retweets": 0, "replies": 0},
+            {"text_normalized": "आज गिरावट रही", "lang_hint": "hi", "likes": 1, "retweets": 0, "replies": 0},
+            {"text_normalized": "nifty breakout", "lang_hint": "en", "likes": 1, "retweets": 0, "replies": 0},
+        ]
+    )
+    out = build_feature_frame(df, settings.analysis)
+    assert out.iloc[0]["sentiment"] > 0, "Hindi bullish tweet should not score neutral"
+    assert out.iloc[1]["sentiment"] < 0
+    assert out.iloc[2]["sentiment"] > 0
+    assert out["sentiment_matched"].all()
 
 
 def test_hashtag_momentum_higher_for_more_co_occurring_tags() -> None:

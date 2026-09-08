@@ -159,6 +159,30 @@ analysis:
       - "bech do"
       - "short karo"
       - "bearish view"
+    # Devanagari terms, routed by lang_hint onto the ~6% of tweets that actually contain
+    # the script. Without these a fluent Hindi bullish tweet scored exactly neutral.
+    bullish_devanagari:
+      - "तेजी"
+      - "तेज़ी"
+      - "ऊपर जाएगा"
+      - "बढ़ेगा"
+      - "उछाल"
+      - "खरीदो"
+      - "खरीदें"
+      - "मजबूत"
+      - "मजबूती"
+      - "लॉन्ग"
+    bearish_devanagari:
+      - "मंदी"
+      - "गिरावट"
+      - "गिरेगा"
+      - "नीचे जाएगा"
+      - "टूटेगा"
+      - "बेचो"
+      - "बेचें"
+      - "कमजोर"
+      - "कमजोरी"
+      - "दबाव"
 
 aggregation:
   # pandas offset aliases — lowercase since pandas 2.2 ('1H'/'1D' are deprecated).
