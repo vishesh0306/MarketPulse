@@ -199,7 +199,7 @@ async def build_api(cookies: str, db_path: str, account_label: str) -> Any:
 
 
 def _search_stream(
-    api: Any, hashtag: str, hours: float, offset_hours: float, limit: int
+    api: Any, hashtag: str, hours: float, offset_hours: float, limit: int, *, now: datetime | None = None
 ) -> AsyncGenerator[Any, None]:
     """The raw twscrape search generator for one hashtag.
 
@@ -212,7 +212,9 @@ def _search_stream(
     """
     # product=Latest forces the chronological tab; the "Top" tab reorders by engagement
     # and pulls in older popular tweets, which is the opposite of what a 24h window wants.
-    return api.search(build_query(hashtag, hours, offset_hours), limit=limit, kv={"product": "Latest"})
+    return api.search(
+        build_query(hashtag, hours, offset_hours, now=now), limit=limit, kv={"product": "Latest"}
+    )
 
 
 async def collect_hashtag(
@@ -224,18 +226,28 @@ async def collect_hashtag(
     remaining: Callable[[], int],
     offset_hours: float = 0.0,
     per_hashtag_cap: int = _DEFAULT_PER_HASHTAG_CAP,
+    run_unique_ids: set[str] | None = None,
+    window_end: datetime | None = None,
 ) -> dict[str, Any]:
     """Streams one hashtag's tweets to JSONL, stopping when the run-wide target is met.
 
-    `remaining` returns how many more tweets the run still needs *excluding* what this
-    call has collected so far — the caller only folds a hashtag's total in once it
-    finishes — so the loop compares its own running count against it. Same shared-target
-    idea as the Selenium scraper's _SharedProgress: a dense hashtag covers for a sparse
-    one instead of both stopping at a fixed slice.
+    `run_unique_ids` is the run's set of *distinct* tweet ids, shared across hashtags and
+    updated live, and `remaining` is read from it. That distinction matters: a tweet
+    carrying two tracked hashtags is legitimately collected under each (storage partitions
+    by hashtag, and each hashtag's signal should count it), so rows exceed distinct
+    tweets — an observed run wrote 2,000 rows covering only 1,559 tweets. Gating on rows
+    would let `--min-tweets 2000` pass on a corpus well short of 2,000 tweets.
+
+    `window_end` pins the collection window for the whole run. Left to default, both the
+    query and the filter would call `datetime.now()` afresh, so over a 30-45 minute run
+    the cutoff slides forward and tweets accepted early get rejected later — worst at the
+    oldest edge, which the Latest tab reaches last.
     """
     collected = 0
     out_of_window = 0
     seen_ids: set[str] = set()
+    run_unique_ids = run_unique_ids if run_unique_ids is not None else set()
+    window_end = window_end or datetime.now(timezone.utc)
     errors: list[str] = []
     oldest: str | None = None
     newest: str | None = None
@@ -246,24 +258,27 @@ async def collect_hashtag(
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        stream = _search_stream(api, hashtag, hours, offset_hours, per_hashtag_cap)
+        stream = _search_stream(api, hashtag, hours, offset_hours, per_hashtag_cap, now=window_end)
         # aclosing() so an early break shuts the search generator down deterministically
         # rather than leaving the event loop to finalize it mid-await at interpreter exit.
         with output_path.open("a", encoding="utf-8") as out_file:
             async with contextlib.aclosing(stream) as tweets:
                 async for tweet in tweets:
-                    if collected >= remaining():
+                    if remaining() <= 0:
                         break
                     record = tweet_to_record(tweet, hashtag)
                     if record["tweet_id"] in seen_ids:
                         continue
                     seen_ids.add(record["tweet_id"])
-                    if not within_window(str(record["created_at"]), hours, offset_hours):
+                    if not within_window(str(record["created_at"]), hours, offset_hours, now=window_end):
                         out_of_window += 1
                         continue
                     out_file.write(json.dumps(record, ensure_ascii=False) + "\n")
                     out_file.flush()
                     collected += 1
+                    # Registered after the write, so the run-wide gate counts distinct
+                    # tweets actually on disk rather than rows.
+                    run_unique_ids.add(str(record["tweet_id"]))
                     created = str(record["created_at"])
                     oldest = created if oldest is None or created < oldest else oldest
                     newest = created if newest is None or created > newest else newest
@@ -277,7 +292,8 @@ async def collect_hashtag(
                                 "extra_fields": {
                                     "hashtag": hashtag,
                                     "collected": collected,
-                                    "still_needed": max(0, remaining() - collected),
+                                    "run_unique": len(run_unique_ids),
+                                    "still_needed": remaining(),
                                     "newest": newest,
                                     "oldest": oldest,
                                 }
@@ -338,11 +354,21 @@ async def collect(
     api: Any,
     offset_hours: float = 0.0,
 ) -> list[dict[str, Any]]:
-    """Runs every hashtag against x.com until the run-wide target is met."""
-    total = 0
+    """Runs every hashtag against x.com until the run-wide target is met.
+
+    The target counts *distinct tweets*, not rows. A tweet carrying two tracked hashtags
+    is written once per hashtag, so rows run well ahead of tweets — gating on rows would
+    let `--min-tweets 2000` succeed on a corpus of far fewer than 2,000 tweets.
+
+    The window is pinned once here so every hashtag queries and filters against the same
+    instant, rather than each re-deriving "now" as the run stretches over rate-limit waits.
+    """
+    run_unique_ids: set[str] = set()
+    window_end = datetime.now(timezone.utc)
+    rows = 0
 
     def remaining() -> int:
-        return max(0, min_tweets - total)
+        return max(0, min_tweets - len(run_unique_ids))
 
     summaries: list[dict[str, Any]] = []
     for hashtag in hashtags:
@@ -356,10 +382,21 @@ async def collect(
             raw_dir / f"{hashtag}_{run_timestamp}.jsonl",
             remaining=remaining,
             offset_hours=offset_hours,
+            run_unique_ids=run_unique_ids,
+            window_end=window_end,
         )
-        total += int(summary["collected"])
+        rows += int(summary["collected"])
         summaries.append(summary)
-        logger.info("run progress", extra={"extra_fields": {"total_collected": total, "target": min_tweets}})
+        logger.info(
+            "run progress",
+            extra={
+                "extra_fields": {
+                    "unique_tweets": len(run_unique_ids),
+                    "rows_written": rows,
+                    "target": min_tweets,
+                }
+            },
+        )
     return summaries
 
 

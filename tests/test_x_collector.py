@@ -245,9 +245,47 @@ async def test_collect_hashtag_writes_jsonl_and_dedupes(tmp_path: Path) -> None:
 
 
 async def test_collect_hashtag_stops_at_run_wide_remaining(tmp_path: Path) -> None:
+    """`remaining` reads the live run-wide set, so it decrements as tweets are written."""
     api = _FakeAPI([_tweet(i) for i in range(1, 11)])
-    summary = await collect_hashtag(api, "nifty50", 24, tmp_path / "n.jsonl", remaining=lambda: 3)
+    run_ids: set[str] = set()
+    summary = await collect_hashtag(
+        api, "nifty50", 24, tmp_path / "n.jsonl",
+        remaining=lambda: max(0, 3 - len(run_ids)), run_unique_ids=run_ids,
+    )
     assert summary["collected"] == 3
+    assert run_ids == {"1", "2", "3"}
+
+
+async def test_target_counts_distinct_tweets_not_rows(tmp_path: Path) -> None:
+    """A tweet carrying two tracked hashtags is written once per hashtag, so rows run
+    ahead of distinct tweets. Gating on rows would let --min-tweets pass on a corpus of
+    far fewer actual tweets — an observed run wrote 2,000 rows covering only 1,559."""
+    shared = [_tweet(1), _tweet(2), _tweet(3)]  # same three tweets under every hashtag
+    api = _FakeAPI(shared)
+
+    summaries = await collect(["nifty50", "sensex", "intraday"], 24, 5, tmp_path, "20260908T120000Z", api=api)
+
+    rows = sum(int(s["collected"]) for s in summaries)
+    distinct = len({json.loads(line)["tweet_id"]
+                    for f in tmp_path.glob("*.jsonl")
+                    for line in f.read_text(encoding="utf-8").splitlines()})
+    # All three hashtags run, because 3 distinct tweets never reaches the target of 5 —
+    # even though 9 rows get written. Under a row-based gate it would have stopped at 5.
+    assert distinct == 3
+    assert rows == 9
+    assert all(int(s["collected"]) == 3 for s in summaries)
+
+
+async def test_collect_pins_the_window_for_the_whole_run(tmp_path: Path) -> None:
+    """Every hashtag must query and filter against the same instant. If each re-derived
+    'now', a 30-45 minute run would slide its cutoff forward and start rejecting tweets
+    at the oldest edge that it would have accepted earlier."""
+    api = _FakeAPI([_tweet(1)])
+    await collect(["nifty50", "sensex"], 24, 100, tmp_path, "20260908T120000Z", api=api)
+
+    windows = {q.split("since_time:")[1] for q in api.queries}
+    assert len(api.queries) == 2
+    assert len(windows) == 1, f"window drifted between hashtags: {windows}"
 
 
 async def test_collect_hashtag_records_oldest_and_newest(tmp_path: Path) -> None:

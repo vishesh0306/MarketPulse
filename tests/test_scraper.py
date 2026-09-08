@@ -345,24 +345,41 @@ def test_process_card_batch_writes_dedupes_and_stops_at_cutoff() -> None:
     ]
     out, seen = io.StringIO(), set()
 
-    collected, parse_errors, reached_cutoff, errors = _process_card_batch(
+    collected, parse_errors, reached_cutoff, errors, stale = _process_card_batch(
         batch, "nifty50", out, seen, cutoff
     )
 
-    assert (collected, parse_errors, errors) == (2, 0, [])
-    assert reached_cutoff is True
+    assert (collected, parse_errors, errors) == (3, 0, [])
+    # One stray old tweet is a pinned/out-of-order result, not the end of the window, so
+    # collection continues and 104 -- which the old "break on first" logic discarded -- is
+    # kept.
+    assert stale == 1 and reached_cutoff is False
     written = [json.loads(line) for line in out.getvalue().splitlines()]
-    assert [r["tweet_id"] for r in written] == ["101", "102"]
+    assert [r["tweet_id"] for r in written] == ["101", "102", "104"]
     assert all(r["source_hashtag"] == "nifty50" and r["collected_at"] for r in written)
-    # the crux: unique_ids is len(seen_ids), so it must match the rows actually written
-    assert seen == {"101", "102"}
+    # unique_ids is len(seen_ids), so it must match the rows actually written
+    assert seen == {"101", "102", "104"}
     assert len(seen) == collected
+
+
+def test_process_card_batch_stops_after_a_run_of_out_of_window_tweets() -> None:
+    """Enough consecutive old tweets does mean the window has genuinely ended, and paging
+    further is wasted work."""
+    cutoff = datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+    batch = [_card("1", "Aug 4, 2026 · 12:59 PM UTC")] + [
+        _card(str(200 + i), "Aug 4, 2026 · 09:00 AM UTC") for i in range(6)
+    ]
+    out, seen = io.StringIO(), set()
+    collected, _, reached_cutoff, _, stale = _process_card_batch(batch, "nifty50", out, seen, cutoff)
+    assert collected == 1
+    assert reached_cutoff is True
+    assert stale == 5  # stops at the run length, doesn't churn through the rest
 
 
 def test_process_card_batch_counts_unparseable_cards_without_aborting() -> None:
     batch = [_card("201", "Aug 4, 2026 · 12:59 PM UTC"), "<div class='timeline-item'></div>"]
     out, seen = io.StringIO(), set()
-    collected, parse_errors, _, errors = _process_card_batch(
+    collected, parse_errors, _, errors, _ = _process_card_batch(
         batch, "sensex", out, seen, datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
     )
     assert collected == 1

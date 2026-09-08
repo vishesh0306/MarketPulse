@@ -40,6 +40,9 @@ _HASHTAG_RE = re.compile(r"#(\w+)")
 _COUNT_SUFFIX = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
 _WHITESPACE_RE = re.compile(r"\s+")
 _MAX_RATE_LIMIT_RETRIES = 3
+# Consecutive out-of-window tweets before we accept the lookback window has really
+# ended. One alone is just a pinned or out-of-order tweet.
+_CUTOFF_RUN_LENGTH = 5
 _STAT_KINDS = {"comment": "replies", "retweet": "retweets", "heart": "likes"}
 
 
@@ -271,14 +274,16 @@ def _process_card_batch(
     out_file: Any,
     seen_ids: set[str],
     cutoff: datetime,
-) -> tuple[int, int, bool, list[str]]:
+) -> tuple[int, int, bool, list[str], int]:
     """Extracts, dedupes, and writes one page's worth of tweet cards.
 
-    Returns (newly_collected, parse_errors, reached_cutoff, errors).
+    Returns (newly_collected, parse_errors, reached_cutoff, errors, out_of_window).
     """
     collected = 0
     parse_errors = 0
     reached_cutoff = False
+    out_of_window = 0
+    consecutive_out_of_window = 0
     errors: list[str] = []
     for card_html in batch:
         try:
@@ -293,21 +298,28 @@ def _process_card_batch(
 
         created_at = datetime.fromisoformat(record["created_at"])
         if created_at < cutoff:
-            # Results are newest-first, so one tweet past the lookback window means
-            # everything after it is too — stop paging instead of fruitlessly fetching
-            # pages that can't count. Recorded *before* seen_ids so this tweet, which is
-            # never written, doesn't inflate the run summary's unique_ids over the row
-            # count actually on disk.
-            reached_cutoff = True
-            break
+            # Results are *mostly* newest-first, but "mostly" isn't "guaranteed": a pinned
+            # tweet or any ordering quirk puts one old tweet among recent ones. Treating
+            # the first of those as the end of the window threw away every in-window tweet
+            # after it. Skip it, and only conclude the window has genuinely ended after a
+            # run of consecutive old tweets — which keeps the optimisation of not paging
+            # into results that can't count. Not added to seen_ids: it is never written,
+            # and counting it would inflate unique_ids past the rows on disk.
+            consecutive_out_of_window += 1
+            out_of_window += 1
+            if consecutive_out_of_window >= _CUTOFF_RUN_LENGTH:
+                reached_cutoff = True
+                break
+            continue
 
+        consecutive_out_of_window = 0
         seen_ids.add(record["tweet_id"])
 
         record["collected_at"] = datetime.now(timezone.utc).isoformat()
         out_file.write(json.dumps(record, ensure_ascii=False) + "\n")
         out_file.flush()
         collected += 1
-    return collected, parse_errors, reached_cutoff, errors
+    return collected, parse_errors, reached_cutoff, errors, out_of_window
 
 
 def _new_page_iter(driver: WebDriver, rate_limiter: TokenBucketRateLimiter, settings: Settings) -> Iterator[list[str]]:
@@ -399,6 +411,7 @@ def _attempt_host(
 
     collected = 0
     parse_errors = 0
+    out_of_window = 0
     errors: list[str] = []
     backoff_triggered = False
     host_exhausted = False
@@ -408,9 +421,10 @@ def _attempt_host(
     while True:
         try:
             for batch in page_iter:
-                batch_collected, batch_parse_errors, reached_cutoff, batch_errors = _process_card_batch(
+                batch_collected, batch_parse_errors, reached_cutoff, batch_errors, batch_stale = _process_card_batch(
                     batch, hashtag, out_file, seen_ids, cutoff
                 )
+                out_of_window += batch_stale
                 collected += batch_collected
                 parse_errors += batch_parse_errors
                 errors.extend(batch_errors)
@@ -435,6 +449,7 @@ def _attempt_host(
     return {
         "collected": collected,
         "parse_errors": parse_errors,
+        "out_of_window": out_of_window,
         "errors": errors,
         "backoff_triggered": backoff_triggered,
         "host_exhausted": host_exhausted,
