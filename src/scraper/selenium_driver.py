@@ -24,6 +24,16 @@ def random_viewport() -> tuple[int, int]:
     return random.choice(_VIEWPORTS)
 
 
+def rotate_user_agent(driver: WebDriver) -> str:
+    """Swaps the session's user-agent for a fresh random one via CDP, without tearing
+    down and rebuilding the browser. Called between hosts so a single worker doesn't hit
+    every configured mirror with the same fingerprint. Returns the UA now in effect.
+    """
+    ua = random_user_agent()
+    driver.execute_cdp_cmd("Network.setUserAgentOverride", {"userAgent": ua})
+    return ua
+
+
 def resolve_driver_path() -> str:
     """Downloads/verifies the chromedriver binary and returns its local path.
 

@@ -28,7 +28,7 @@ from urllib3.exceptions import ReadTimeoutError as URLLib3ReadTimeoutError
 
 from src.scraper.anti_detection import is_soft_blocked
 from src.scraper.rate_limiter import RateLimitedError, TokenBucketRateLimiter
-from src.scraper.selenium_driver import get_driver, resolve_driver_path
+from src.scraper.selenium_driver import get_driver, resolve_driver_path, rotate_user_agent
 from src.utils.config_loader import Settings, load_settings
 from src.utils.logger import get_logger, set_level, write_run_summary
 
@@ -374,6 +374,14 @@ def _attempt_host(
         settings.scraper.rate_limiter.bucket_capacity,
         settings.scraper.rate_limiter.refill_rate_per_second,
     )
+
+    # Fresh user-agent per host so one worker doesn't present the same fingerprint to
+    # every mirror in the failover list. Best-effort — a driver that can't take the CDP
+    # command just keeps the UA it was built with.
+    try:
+        rotate_user_agent(driver)
+    except WebDriverException as exc:
+        logger.debug("user-agent rotation failed", extra={"extra_fields": {"host": host, "error": str(exc)}})
 
     try:
         driver.get(url)

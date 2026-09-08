@@ -19,8 +19,9 @@ from bs4 import BeautifulSoup
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from urllib3.exceptions import ReadTimeoutError as URLLib3ReadTimeoutError
 
-from src.scraper.anti_detection import is_soft_blocked
+from src.scraper.anti_detection import _USER_AGENTS, is_soft_blocked
 from src.scraper.rate_limiter import RateLimitedError, TokenBucketRateLimiter
+from src.scraper.selenium_driver import rotate_user_agent
 from src.scraper.twitter_scraper import (
     ParseError,
     ScrapeTimeoutError,
@@ -98,6 +99,13 @@ def test_extract_engagement_finds_icon_span_not_wrapper_div(fixture_cards: list[
 def test_build_search_url() -> None:
     url = build_search_url("nifty50", "nitter.example.com", "https://{host}/search?f=tweets&q=%23{hashtag}")
     assert url == "https://nitter.example.com/search?f=tweets&q=%23nifty50"
+
+
+def test_rotate_user_agent_issues_cdp_override_with_known_ua() -> None:
+    driver = MagicMock()
+    ua = rotate_user_agent(driver)
+    assert ua in _USER_AGENTS
+    driver.execute_cdp_cmd.assert_called_once_with("Network.setUserAgentOverride", {"userAgent": ua})
 
 
 def test_scrape_one_hashtag_handles_driver_failure_gracefully(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
