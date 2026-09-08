@@ -10,9 +10,16 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     environment:
-      HASHTAGS: ${HASHTAGS:-nifty50,sensex,intraday,banknifty}
+      # X session cookies, read from the local .env by compose's own substitution. The
+      # image deliberately does not contain them (.dockerignore excludes .env), so they
+      # have to arrive at run time or the collector exits 2 with "missing credentials".
+      X_AUTH_TOKEN: ${X_AUTH_TOKEN:-}
+      X_CT0: ${X_CT0:-}
+      # Empty means "whatever config lists" — the assignment's four plus related_hashtags.
+      HASHTAGS: ${HASHTAGS:-}
       HOURS: ${HOURS:-24}
       MIN_TWEETS: ${MIN_TWEETS:-2000}
+      COLLECTOR: ${COLLECTOR:-x}
       WORKERS: ${WORKERS:-4}
     # No depends_on: the batch pipeline reads all config from config/settings.yaml and
     # runs standalone against local Parquet files.

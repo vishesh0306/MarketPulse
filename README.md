@@ -266,10 +266,19 @@ Config lives under `realtime:` in `config/settings.yaml` (poll interval, queue s
 
 ## Run with Docker
 
+Optional — the venv route above is the primary one and needs no daemon. Docker is there
+for a reproducible environment and for the real-time service, which wants a Redis
+alongside it.
+
 ```bash
-docker compose run --rm marketpulse    # batch pipeline (Nitter path)
-docker compose up realtime             # real-time service + redis
+docker compose run --rm marketpulse    # batch pipeline
+docker compose up realtime             # real-time service + redis on :8000
 ```
+
+Credentials are **not** baked into the image (`.dockerignore` excludes `.env`). Compose
+reads your local `.env` and passes `X_AUTH_TOKEN`/`X_CT0` in at run time, so fill that in
+first or the collector exits 2. `data/` and `logs/` are bind-mounted, so output lands on
+the host exactly as it does for a local run.
 
 ## Tests
 
