@@ -21,21 +21,37 @@ def rollup(bucketed_signals: pd.DataFrame, window: str) -> pd.DataFrame:
     # normalize here so an old-style config value keeps working without the warning.
     df["bucket_start"] = df["bucket_start"].dt.floor(window.lower())
 
-    weighted = df.assign(
-        weighted_signal=df["composite_signal"] * df["tweet_count"],
-        weighted_ci_lower=df["ci_lower"] * df["tweet_count"],
-        weighted_ci_upper=df["ci_upper"] * df["tweet_count"],
-    )
-    grouped = weighted.groupby(["hashtag", "bucket_start"], observed=True).agg(
-        weighted_signal=("weighted_signal", "sum"),
-        weighted_ci_lower=("weighted_ci_lower", "sum"),
-        weighted_ci_upper=("weighted_ci_upper", "sum"),
-        tweet_count=("tweet_count", "sum"),
-    )
+    keys = ["hashtag", "bucket_start"]
 
-    grouped["composite_signal"] = grouped["weighted_signal"] / grouped["tweet_count"]
-    grouped["ci_lower"] = grouped["weighted_ci_lower"] / grouped["tweet_count"]
-    grouped["ci_upper"] = grouped["weighted_ci_upper"] / grouped["tweet_count"]
+    # Volume rolls up over every fine bucket, including the ones whose signal was
+    # suppressed for being too thin — the coarse bucket's tweet_count is still the full
+    # count.
+    volume = df.groupby(keys, observed=True)["tweet_count"].sum().rename("tweet_count")
 
-    out = grouped[["composite_signal", "ci_lower", "ci_upper", "tweet_count"]].reset_index()
-    return out.sort_values(["hashtag", "bucket_start"]).reset_index(drop=True)
+    # Signal and interval roll up as a tweet-count-weighted average over only the fine
+    # buckets that carry a signal, so a run of suppressed buckets doesn't drag the coarse
+    # value toward zero or leave it undefined.
+    scored = df.dropna(subset=["composite_signal"]).copy()
+    weighted = scored.assign(
+        _w_signal=scored["composite_signal"] * scored["tweet_count"],
+        _w_ci_lower=scored["ci_lower"] * scored["tweet_count"],
+        _w_ci_upper=scored["ci_upper"] * scored["tweet_count"],
+    )
+    agg = weighted.groupby(keys, observed=True).agg(
+        _w_signal=("_w_signal", "sum"),
+        _w_ci_lower=("_w_ci_lower", "sum"),
+        _w_ci_upper=("_w_ci_upper", "sum"),
+        _scored_tweets=("tweet_count", "sum"),
+    )
+    agg["composite_signal"] = agg["_w_signal"] / agg["_scored_tweets"]
+    agg["ci_lower"] = agg["_w_ci_lower"] / agg["_scored_tweets"]
+    agg["ci_upper"] = agg["_w_ci_upper"] / agg["_scored_tweets"]
+
+    out = (
+        volume.to_frame()
+        .join(agg[["composite_signal", "ci_lower", "ci_upper"]], how="left")
+        .reset_index()
+    )
+    return out[["hashtag", "bucket_start", "composite_signal", "ci_lower", "ci_upper", "tweet_count"]].sort_values(
+        keys
+    ).reset_index(drop=True)

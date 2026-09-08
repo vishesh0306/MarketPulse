@@ -88,6 +88,11 @@ analysis:
       - "amp"
       - "via"
   bucket_minutes: 15
+  # A bucket with only a handful of tweets can't support a meaningful mean or interval —
+  # its CI is dominated by the dataset-wide-variance fallback and all but guaranteed to
+  # span zero. Buckets below this many tweets keep their volume but their signal/CI are
+  # emitted as null (suppressed) rather than as noise a consumer might act on.
+  min_bucket_tweets: 5
   # NSE trades 09:15-15:30 IST, Mon-Fri. Off-hours chatter stays in data/processed, but
   # bucketing it into the trading signal mostly measures conversation volume at 2am, not
   # market sentiment — and those thin off-hours buckets are the ones with the widest,

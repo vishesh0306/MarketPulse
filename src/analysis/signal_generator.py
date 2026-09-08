@@ -194,7 +194,14 @@ def generate_signals(processed_dir: Path, config: Settings) -> pd.DataFrame:
         for key, group in groups
     )
 
-    return pd.DataFrame(results, columns=OUTPUT_COLUMNS).sort_values(["hashtag", "bucket_start"]).reset_index(drop=True)
+    out = pd.DataFrame(results, columns=OUTPUT_COLUMNS).sort_values(["hashtag", "bucket_start"]).reset_index(drop=True)
+
+    # Suppress the signal (not the volume) for buckets too thin to support the statistic:
+    # keep tweet_count so the volume view is complete, but null the signal and interval so
+    # nothing downstream treats them as a real read. Reported in the run summary.
+    sparse = out["tweet_count"] < config.analysis.min_bucket_tweets
+    out.loc[sparse, ["composite_signal", "ci_lower", "ci_upper"]] = np.nan
+    return out
 
 
 def main() -> None:
@@ -223,8 +230,12 @@ def main() -> None:
             rollup(signals, window).to_parquet(rollup_path, compression=settings.storage.parquet_compression)
             rollup_paths.append(str(rollup_path))
 
+    suppressed = int(signals["composite_signal"].isna().sum()) if not signals.empty else 0
     summary = {
         "buckets": len(signals),
+        "buckets_scored": len(signals) - suppressed,
+        "buckets_suppressed_sparse": suppressed,
+        "min_bucket_tweets": settings.analysis.min_bucket_tweets,
         "hashtags": sorted(signals["hashtag"].unique().tolist()) if not signals.empty else [],
         "output_path": str(output_path),
         "rollup_paths": rollup_paths,

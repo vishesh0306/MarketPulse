@@ -95,6 +95,7 @@ class SentimentLexicon(BaseModel):
 class AnalysisConfig(BaseModel):
     tfidf: TfidfConfig
     bucket_minutes: int
+    min_bucket_tweets: int = 1
     bootstrap: BootstrapConfig
     signal_weights: dict[str, float]
     sentiment_lexicon: SentimentLexicon
