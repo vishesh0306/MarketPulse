@@ -26,6 +26,8 @@ Each tweet is recorded with username, timestamp, text, engagement counts, mentio
 
 Raw tweets are cleaned (Unicode NFC normalization, URL stripping), validated against a typed schema, and deduplicated on both exact `(tweet_id, source_hashtag)` and a content hash of normalized text + author + source hashtag. Keying on the hashtag as well as the ID matters here: a tweet mentioning more than one target hashtag is legitimately collected once per hashtag search, and storage partitions by hashtag, so each of those copies belongs in its own partition rather than being deduplicated away. Invalid records are quarantined with a reason rather than dropped, and one truncated JSONL line quarantines that line instead of aborting the run.
 
+The lookback window is re-applied here, not just at collection. `data/raw` accumulates across runs — deliberately, since reprocessing everything is what makes this stage idempotent — but each run's tweets were only inside the window at *its* collection time, so two runs a few hours apart union into a dataset spanning more than the lookback. An observed run drifted to 26 hours. Out-of-window records are counted separately from rejects (they are valid data, just outside the window of interest) and the conservation check becomes `in == out + rejected + deduped + out_of_window`.
+
 Processed data is written as Parquet, partitioned by date and hashtag. Writes are chunked so the *write* path never holds the whole dataset; the dedup structures are in-memory sets, so processing memory is `O(unique records)` for a run, not constant. Output is written to a temp directory and swapped in atomically, so a re-run reproduces the same row count and a mid-run crash leaves the previous output intact.
 
 ### Analysis & Signal Generation

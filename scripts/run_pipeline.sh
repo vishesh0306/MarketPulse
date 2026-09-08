@@ -60,7 +60,9 @@ fi
 validate scraper
 
 echo "[2/4] Processing & storing..."
-"$PYTHON" -m src.processing.storage --input data/raw --output data/processed
+# Same window the collector was asked for: data/raw accumulates across runs, so the
+# processed set has to be trimmed back to the lookback or it drifts wider than it.
+"$PYTHON" -m src.processing.storage --input data/raw --output data/processed --lookback-hours "$HOURS"
 validate processing
 
 echo "[3/4] Generating signals..."

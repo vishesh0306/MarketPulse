@@ -11,6 +11,7 @@ import shutil
 import tracemalloc
 import uuid
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -150,6 +151,23 @@ def _flush_rejects(buffer: list[tuple[str, dict[str, Any]]], rejects_dir: Path) 
                 f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
 
+def _is_within_lookback(record: dict[str, Any], cutoff: datetime | None) -> bool:
+    """Whether a record's created_at is at or after `cutoff` (no cutoff means keep all)."""
+    if cutoff is None:
+        return True
+    raw_value = record.get("created_at")
+    if isinstance(raw_value, datetime):
+        created = raw_value
+    else:
+        try:
+            created = datetime.fromisoformat(str(raw_value))
+        except (TypeError, ValueError):
+            return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return created >= cutoff
+
+
 def process_raw_files(
     input_dir: Path,
     output_dir: Path,
@@ -157,6 +175,7 @@ def process_raw_files(
     rejects_dir: Path,
     near_duplicate_fields: list[str],
     compression: str,
+    lookback_hours: int | None = None,
 ) -> dict[str, Any]:
     """Runs the full clean -> validate -> dedup -> write pipeline over all raw JSONL files.
 
@@ -165,8 +184,19 @@ def process_raw_files(
     into place once the run completes, so re-running against the same data/raw always
     reproduces the same row count rather than accumulating duplicates, and a run that
     fails partway through leaves the previous output untouched rather than deleted.
-    Returns a run-summary dict (counts in/out/rejected/deduped).
+
+    `lookback_hours` trims the output to a rolling window ending now. data/raw
+    accumulates across collection runs — deliberately, since reprocessing everything is
+    what makes this stage idempotent — but each run's tweets were only inside the window
+    at *its* collection time. Two runs a few hours apart therefore union into a dataset
+    spanning more than the lookback, which quietly breaks the "last 24 hours" the
+    assignment asks for. Filtering here keeps the raw archive intact while making the
+    processed dataset correct by construction. Out-of-window records are counted
+    separately from rejects: they are valid data, just outside the window of interest.
+
+    Returns a run-summary dict (counts in/out/rejected/deduped/out_of_window).
     """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours) if lookback_hours else None
     tmp_output_dir = _tmp_sibling(output_dir)
     if tmp_output_dir.exists():
         shutil.rmtree(tmp_output_dir)
@@ -183,7 +213,7 @@ def process_raw_files(
             shutil.rmtree(tmp_rejects_dir)
         tmp_rejects_dir.mkdir(parents=True)
 
-    counts = {"in": 0, "out": 0, "rejected": 0}
+    counts = {"in": 0, "out": 0, "rejected": 0, "out_of_window": 0}
     reject_reason_counts: dict[str, int] = defaultdict(int)
     reject_buffer: list[tuple[str, dict[str, Any]]] = []
 
@@ -201,6 +231,10 @@ def process_raw_files(
                 continue
             assert raw is not None  # parse_error is None, so json.loads succeeded
             cleaned = _clean_record(raw)
+            if not _is_within_lookback(cleaned, cutoff):
+                # Valid data, just older than the window — dropped, not quarantined.
+                counts["out_of_window"] += 1
+                continue
             is_valid, reason = validate(cleaned)
             if not is_valid:
                 counts["rejected"] += 1
@@ -229,9 +263,10 @@ def process_raw_files(
     if not rejects_nested:
         _replace_directory(tmp_rejects_dir, rejects_dir)
 
-    # Derived rather than separately tracked, so the in = out + rejected + deduped
-    # invariant holds by construction instead of by two counters staying in sync.
-    counts["deduped"] = counts["in"] - counts["out"] - counts["rejected"]
+    # Derived rather than separately tracked, so the
+    # in = out + rejected + out_of_window + deduped invariant holds by construction
+    # instead of by counters staying in sync.
+    counts["deduped"] = counts["in"] - counts["out"] - counts["rejected"] - counts["out_of_window"]
 
     return {**counts, "reject_reasons": dict(reject_reason_counts)}
 
@@ -240,6 +275,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Clean, dedupe, and store raw tweets as Parquet.")
     parser.add_argument("--input", type=str, default="data/raw")
     parser.add_argument("--output", type=str, default="data/processed")
+    parser.add_argument(
+        "--lookback-hours",
+        type=int,
+        default=None,
+        help="Keep only tweets from the last N hours (default: config scraper.hours_lookback). "
+        "Pass 0 to process every raw file regardless of age.",
+    )
     args = parser.parse_args()
 
     settings = load_settings()
@@ -248,6 +290,9 @@ def main() -> None:
     output_dir = Path(args.output)
     rejects_dir = Path(settings.storage.rejects_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    # 0 means "no window"; None means "use the collection lookback", so the processed
+    # dataset matches the window the scraper was asked to collect.
+    lookback = settings.scraper.hours_lookback if args.lookback_hours is None else (args.lookback_hours or None)
 
     tracemalloc.start()
     summary = process_raw_files(
@@ -257,6 +302,7 @@ def main() -> None:
         rejects_dir,
         settings.processing.near_duplicate_hash_fields,
         settings.storage.parquet_compression,
+        lookback_hours=lookback,
     )
     _, peak_bytes = tracemalloc.get_traced_memory()
     tracemalloc.stop()

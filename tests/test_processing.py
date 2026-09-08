@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -333,6 +334,71 @@ def test_process_raw_files_writes_readable_parquet(tmp_path: Path, raw_dir: Path
     assert len(df) == 1
     assert df.iloc[0]["tweet_id"] == "1001"
     assert pd.api.types.is_datetime64_any_dtype(df["created_at"])
+
+
+def _raw_with_ages(raw_dir: Path, ages_hours: list[float]) -> None:
+    """Writes one raw tweet per given age in hours before now."""
+    now = datetime.now(timezone.utc)
+    with (raw_dir / "aged.jsonl").open("w", encoding="utf-8") as f:
+        for i, age in enumerate(ages_hours):
+            f.write(
+                json.dumps(
+                    {
+                        "tweet_id": f"9{i}",
+                        "username": f"trader{i}",
+                        "created_at": (now - timedelta(hours=age)).isoformat(),
+                        "collected_at": now.isoformat(),
+                        "text": f"nifty update number {i}",
+                        "likes": 1,
+                        "retweets": 0,
+                        "replies": 0,
+                        "mentions": [],
+                        "hashtags": ["nifty50"],
+                        "source_hashtag": "nifty50",
+                    }
+                )
+                + "\n"
+            )
+
+
+def test_process_raw_files_drops_records_outside_the_lookback(tmp_path: Path) -> None:
+    """data/raw accumulates across collection runs, so tweets that were inside the window
+    when collected drift outside it as time passes — the union then spans more than the
+    lookback and quietly breaks the "last 24 hours" requirement. The window has to be
+    re-applied here, and out-of-window records counted apart from rejects."""
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    _raw_with_ages(raw_dir, [1.0, 5.0, 23.0, 26.0, 60.0])  # last two are outside 24h
+    output_dir = tmp_path / "processed"
+
+    summary = process_raw_files(
+        raw_dir, output_dir, chunk_size_rows=50, rejects_dir=output_dir / "_rejects",
+        near_duplicate_fields=["text_normalized", "username"], compression="snappy",
+        lookback_hours=24,
+    )
+
+    assert summary["out"] == 3
+    assert summary["out_of_window"] == 2
+    assert summary["rejected"] == 0, "old-but-valid records must not be quarantined as invalid"
+    assert summary["in"] == summary["out"] + summary["rejected"] + summary["deduped"] + summary["out_of_window"]
+
+    ts = pd.to_datetime(pd.read_parquet(output_dir)["created_at"], utc=True)
+    assert ((datetime.now(timezone.utc) - ts).dt.total_seconds() / 3600 <= 24).all()
+
+
+def test_process_raw_files_without_lookback_keeps_everything(tmp_path: Path) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    _raw_with_ages(raw_dir, [1.0, 26.0, 60.0])
+    output_dir = tmp_path / "processed"
+
+    summary = process_raw_files(
+        raw_dir, output_dir, chunk_size_rows=50, rejects_dir=output_dir / "_rejects",
+        near_duplicate_fields=["text_normalized", "username"], compression="snappy",
+    )
+
+    assert summary["out"] == 3
+    assert summary["out_of_window"] == 0
 
 
 def test_process_raw_files_preserves_directory_markers(tmp_path: Path, raw_dir: Path) -> None:

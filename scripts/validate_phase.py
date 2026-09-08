@@ -54,8 +54,13 @@ def _check_processing(summary: dict[str, Any]) -> list[CheckResult]:
     out_count = summary.get("out", 0)
     rejected = summary.get("rejected", 0)
     deduped = summary.get("deduped", 0)
+    out_of_window = summary.get("out_of_window", 0)
+    accounted = out_count + rejected + deduped + out_of_window
     checks.append(
-        (in_count == out_count + rejected + deduped, f"in ({in_count}) == out + rejected + deduped ({out_count + rejected + deduped})")
+        (
+            in_count == accounted,
+            f"in ({in_count}) == out + rejected + deduped + out_of_window ({accounted})",
+        )
     )
     checks.append((out_count > 0, f"out > 0 (got {out_count})"))
     return checks

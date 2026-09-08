@@ -71,6 +71,13 @@ python -m src.analysis.signal_generator --input data/processed --output data/out
 python -m src.visualization.streaming_plots --input data/output --processed data/processed
 ```
 
+> `data/raw/` keeps every collection run, which is what makes reprocessing idempotent — but
+> tweets that were inside the window when collected drift outside it as time passes. The
+> processing stage therefore re-applies the lookback (`--lookback-hours`, default: the
+> collector's `hours_lookback`), so the analysed dataset is always exactly the last 24
+> hours no matter how many runs have accumulated. Pass `--lookback-hours 0` to keep
+> everything.
+
 **Your results:**
 
 | Where | What |
