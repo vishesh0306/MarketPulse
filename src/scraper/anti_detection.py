@@ -1,4 +1,4 @@
-"""User-agent rotation, randomized scroll timing/distance, and soft-block detection."""
+"""User-agent rotation and soft-block detection."""
 
 from __future__ import annotations
 
@@ -18,11 +18,6 @@ _USER_AGENTS = [
 def random_user_agent() -> str:
     """Returns a randomized, realistic desktop browser user-agent string."""
     return random.choice(_USER_AGENTS)
-
-
-def random_scroll_amount(min_pixels: int, max_pixels: int) -> int:
-    """Returns a randomized scroll distance in pixels."""
-    return random.randint(min_pixels, max_pixels)
 
 
 def is_soft_blocked(page_source: str, indicators: list[str]) -> bool:

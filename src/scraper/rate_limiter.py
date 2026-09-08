@@ -11,7 +11,7 @@ class RateLimitedError(Exception):
 
 
 class TokenBucketRateLimiter:
-    """Bounds action rate via a token bucket; callers wait for a token before each scroll/request."""
+    """Bounds action rate via a token bucket; callers wait for a token before each page request."""
 
     def __init__(self, capacity: int, refill_rate_per_second: float) -> None:
         self.capacity = capacity
