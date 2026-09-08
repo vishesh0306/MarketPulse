@@ -7,7 +7,7 @@ warn_unused_configs = true
 # in requirements.txt). Ignored per-module rather than globally, so a real stub gap in
 # project code still fails the check.
 [[tool.mypy.overrides]]
-module = ["pyarrow.*", "scipy.*", "sklearn.*", "joblib.*"]
+module = ["pyarrow.*", "scipy.*", "sklearn.*", "joblib.*", "twscrape.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

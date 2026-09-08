@@ -1,7 +1,9 @@
+# collection: x.com via a logged-in session (primary), Nitter via Selenium (fallback)
+twscrape==0.20.1
 selenium==4.24.0
 webdriver-manager==4.0.2
 urllib3==2.7.0
-beautifulsoup4==4.12.3
+beautifulsoup4==4.15.0
 pandas==2.2.2
 pyarrow==17.0.0
 scikit-learn==1.5.1

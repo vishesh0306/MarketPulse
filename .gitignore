@@ -56,3 +56,7 @@ TODO.md
 # Selenium / browser
 *.chromedriver
 selenium-debug.log
+
+# twscrape's account store — holds live X session cookies
+accounts.db
+accounts.db-*
