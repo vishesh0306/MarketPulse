@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -479,6 +480,11 @@ def main() -> None:
         "--min-tweets", type=int, default=settings.scraper.min_tweets_target, help="Minimum total tweets to collect."
     )
     parser.add_argument("--workers", type=int, default=None, help="Worker pool size (default: config value).")
+    parser.add_argument(
+        "--allow-shortfall",
+        action="store_true",
+        help="Exit 0 even if fewer than --min-tweets were collected (default: exit non-zero on a shortfall).",
+    )
     args = parser.parse_args()
 
     hashtags = [tag.strip().lstrip("#") for tag in args.hashtags.split(",") if tag.strip()]
@@ -529,6 +535,25 @@ def main() -> None:
         "scrape run complete",
         extra={"extra_fields": {"total_collected": total_collected, "summary_path": str(summary_path)}},
     )
+
+    # The 2,000-tweet minimum is a hard requirement, not a best-effort goal: a run that
+    # falls short must fail loudly so the pipeline stops here instead of carrying a
+    # thin corpus through to signals that can't support the statistic. --allow-shortfall
+    # opts out for exploratory runs.
+    if total_collected < args.min_tweets and not args.allow_shortfall:
+        shortfall = args.min_tweets - total_collected
+        logger.error(
+            "collected fewer tweets than required",
+            extra={
+                "extra_fields": {
+                    "total_collected": total_collected,
+                    "min_tweets": args.min_tweets,
+                    "shortfall": shortfall,
+                    "summary_path": str(summary_path),
+                }
+            },
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

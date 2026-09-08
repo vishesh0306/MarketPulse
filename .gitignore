@@ -49,6 +49,9 @@ logs/*.json
 .DS_Store
 Thumbs.db
 
+# Local planning notes
+TODO.md
+
 # Selenium / browser
 *.chromedriver
 selenium-debug.log

@@ -5,6 +5,8 @@ rate-limit/backoff scenario that doesn't require a live network call.
 from __future__ import annotations
 
 import io
+import sys
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +29,7 @@ from src.scraper.twitter_scraper import (
     build_search_url,
     extract_tweet_fields,
     iter_result_pages,
+    main,
     scrape_hashtag,
 )
 from src.utils.config_loader import load_settings
@@ -245,3 +248,79 @@ def test_scrape_hashtag_tries_next_host_even_when_previous_not_exhausted(
 
     assert calls == settings.scraper.nitter_hosts
     assert summary["collected"] == len(settings.scraper.nitter_hosts)
+
+
+class _SerialExecutor:
+    """Stand-in for ProcessPoolExecutor that runs submitted callables inline, so main()
+    can be exercised without spawning (unpicklable) worker processes in a test."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def __enter__(self) -> "_SerialExecutor":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        pass
+
+    def submit(self, fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+        future: Future = Future()
+        future.set_result(fn(*args, **kwargs))
+        return future
+
+
+def _run_main_with_collected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, per_hashtag_collected: int, argv: list[str]
+) -> int:
+    """Runs main() with the worker pool stubbed to a fixed per-hashtag collected count.
+    Returns the process exit code (0 when main() returns normally)."""
+
+    def _fake_scrape_one(hashtag, hours, min_tweets, output_path, settings, driver_path):  # noqa: ARG001
+        return {
+            "hashtag": hashtag,
+            "collected": per_hashtag_collected,
+            "unique_ids": per_hashtag_collected,
+            "parse_errors": 0,
+            "errors": [],
+            "backoff_triggered": False,
+            "hosts_tried": ["nitter.example.com"],
+        }
+
+    monkeypatch.setattr("src.scraper.twitter_scraper.ProcessPoolExecutor", _SerialExecutor)
+    monkeypatch.setattr("src.scraper.twitter_scraper.resolve_driver_path", lambda: "fake-driver-path")
+    monkeypatch.setattr("src.scraper.twitter_scraper._scrape_one_hashtag", _fake_scrape_one)
+    monkeypatch.setattr("src.scraper.twitter_scraper.write_run_summary", lambda *a, **k: tmp_path / "summary.json")
+    monkeypatch.setattr(sys, "argv", ["twitter_scraper", *argv])
+
+    try:
+        main()
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    return 0
+
+
+def test_main_exits_nonzero_on_tweet_shortfall(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A run that collects fewer than --min-tweets must exit non-zero, so run_pipeline.sh
+    stops instead of carrying a thin corpus through to the signal stage."""
+    code = _run_main_with_collected(
+        monkeypatch, tmp_path, per_hashtag_collected=1, argv=["--hashtags", "nifty50,sensex", "--min-tweets", "100"]
+    )
+    assert code == 1
+
+
+def test_main_allow_shortfall_flag_exits_zero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """--allow-shortfall opts out of the hard minimum for exploratory runs."""
+    code = _run_main_with_collected(
+        monkeypatch,
+        tmp_path,
+        per_hashtag_collected=1,
+        argv=["--hashtags", "nifty50,sensex", "--min-tweets", "100", "--allow-shortfall"],
+    )
+    assert code == 0
+
+
+def test_main_exits_zero_when_target_met(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    code = _run_main_with_collected(
+        monkeypatch, tmp_path, per_hashtag_collected=50, argv=["--hashtags", "nifty50,sensex", "--min-tweets", "100"]
+    )
+    assert code == 0
