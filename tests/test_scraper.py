@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import sys
+import threading
 from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,7 @@ from src.scraper.twitter_scraper import (
     _attempt_host,
     _extract_engagement,
     _scrape_one_hashtag,
+    _SharedProgress,
     build_search_url,
     extract_tweet_fields,
     iter_result_pages,
@@ -238,7 +240,7 @@ def test_scrape_hashtag_tries_next_host_even_when_previous_not_exhausted(
     settings = load_settings()
     calls: list[str] = []
 
-    def _fake_attempt_host(driver, hashtag, host, cutoff, remaining_target, out_file, seen_ids, settings):  # noqa: ARG001
+    def _fake_attempt_host(driver, hashtag, host, cutoff, remaining_target, out_file, seen_ids, settings, progress=None):  # noqa: ARG001
         calls.append(host)
         return {"collected": 1, "parse_errors": 0, "errors": [], "backoff_triggered": False, "host_exhausted": False}
 
@@ -248,6 +250,51 @@ def test_scrape_hashtag_tries_next_host_even_when_previous_not_exhausted(
 
     assert calls == settings.scraper.nitter_hosts
     assert summary["collected"] == len(settings.scraper.nitter_hosts)
+
+
+def _local_progress(target: int) -> _SharedProgress:
+    """A _SharedProgress backed by plain in-process objects, for tests that don't need a
+    real multiprocessing Manager."""
+    return _SharedProgress(SimpleNamespace(value=0), threading.Lock(), target)
+
+
+def test_shared_progress_add_and_remaining() -> None:
+    progress = _local_progress(target=10)
+    assert progress.remaining() == 10
+    progress.add(4)
+    assert progress.remaining() == 6
+    progress.add(0)
+    progress.add(-3)
+    assert progress.remaining() == 6
+    progress.add(20)
+    assert progress.remaining() == 0
+
+
+def test_scrape_hashtag_stops_at_run_wide_target_not_its_own_slice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a shared counter, a hashtag stops as soon as the *combined* run total hits
+    the target — it doesn't keep failing over to more hosts chasing its own min_tweets."""
+    settings = load_settings()
+    progress = _local_progress(target=5)
+    progress.add(3)  # another worker already collected 3
+
+    calls: list[tuple[str, int]] = []
+
+    def _fake_attempt_host(
+        driver, hashtag, host, cutoff, remaining_target, out_file, seen_ids, settings, progress=None
+    ):  # noqa: ARG001
+        calls.append((host, remaining_target))
+        progress.add(2)  # this host yields the final 2 -> run total 5
+        return {"collected": 2, "parse_errors": 0, "errors": [], "backoff_triggered": False, "host_exhausted": False}
+
+    monkeypatch.setattr("src.scraper.twitter_scraper._attempt_host", _fake_attempt_host)
+
+    summary = scrape_hashtag(MagicMock(), "nifty50", 24, 100, tmp_path / "nifty50.jsonl", settings, progress)
+
+    assert len(calls) == 1  # stopped after one host, target met run-wide
+    assert calls[0][1] == 2  # remaining passed in = target(5) - already(3)
+    assert summary["collected"] == 2
 
 
 class _SerialExecutor:

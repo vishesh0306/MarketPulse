@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import re
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -52,6 +53,52 @@ class ParseError(Exception):
 
 class AllHostsExhaustedError(Exception):
     """Raised when every configured Nitter host is down or soft-blocked for a hashtag."""
+
+
+class _SharedProgress:
+    """A run-wide view of how many tweets have been collected so far, shared across the
+    per-hashtag worker processes.
+
+    Without this, each worker chases a fixed 1/N slice of --min-tweets and a dense
+    hashtag stops at its slice while a sparse one falls short, so the run total lands
+    under target with headroom left unused. With it, every worker keeps collecting until
+    the *combined* total reaches the target. Backed by a multiprocessing Manager so the
+    proxies survive being passed to workers under the 'spawn' start method.
+    """
+
+    def __init__(self, counter: Any, lock: Any, target: int) -> None:
+        self._counter = counter
+        self._lock = lock
+        self.target = target
+
+    def add(self, n: int) -> None:
+        if n <= 0:
+            return
+        # += on a manager proxy is read-modify-write across a socket, so it needs the
+        # lock even though each worker only ever adds.
+        with self._lock:
+            self._counter.value += n
+
+    def remaining(self) -> int:
+        return max(0, self.target - self._counter.value)
+
+
+# Set once per worker process by the pool initializer; None in the parent and in any
+# direct (non-pool) call, where scrape_hashtag falls back to its local min_tweets cap.
+_WORKER_PROGRESS: _SharedProgress | None = None
+
+
+def _init_worker(progress: _SharedProgress | None) -> None:
+    global _WORKER_PROGRESS
+    _WORKER_PROGRESS = progress
+
+
+def _target_reached(local_collected: int, local_target: int, progress: _SharedProgress | None) -> bool:
+    """True once enough tweets are in hand — run-wide when a shared counter is in play,
+    otherwise for this hashtag alone."""
+    if progress is not None:
+        return progress.remaining() <= 0
+    return local_collected >= local_target
 
 
 def build_search_url(hashtag: str, host: str, path_template: str) -> str:
@@ -315,10 +362,12 @@ def _attempt_host(
     out_file: Any,
     seen_ids: set[str],
     settings: Settings,
+    progress: _SharedProgress | None = None,
 ) -> dict[str, Any]:
-    """Pages through one host's search results for a hashtag until remaining_target
-    tweets are collected, the 24h cutoff is hit, or the host proves unhealthy (retries
-    exhausted on repeated soft-blocks/stalls).
+    """Pages through one host's search results for a hashtag until the target is reached
+    (run-wide when `progress` is given, otherwise `remaining_target` for this hashtag),
+    the 24h cutoff is hit, or the host proves unhealthy (retries exhausted on repeated
+    soft-blocks/stalls).
     """
     url = build_search_url(hashtag, host, settings.scraper.search_path_template)
     rate_limiter = TokenBucketRateLimiter(
@@ -354,7 +403,9 @@ def _attempt_host(
                 collected += batch_collected
                 parse_errors += batch_parse_errors
                 errors.extend(batch_errors)
-                if collected >= remaining_target or reached_cutoff:
+                if progress is not None:
+                    progress.add(batch_collected)
+                if _target_reached(collected, remaining_target, progress) or reached_cutoff:
                     break
             break
         except (RateLimitedError, TimeoutException, URLLib3ReadTimeoutError) as exc:
@@ -386,9 +437,13 @@ def scrape_hashtag(
     min_tweets: int,
     output_path: Path,
     settings: Settings,
+    progress: _SharedProgress | None = None,
 ) -> dict[str, Any]:
     """Pages through Nitter search results for one hashtag, streaming deduplicated tweets to
     output_path as JSONL, failing over to the next configured host on a soft-block.
+
+    Stops when the target is reached — the run-wide total when `progress` is supplied
+    (workers share one target), otherwise this hashtag's own `min_tweets`.
 
     Returns a per-hashtag summary dict (collected count, errors) for the run-summary log.
     """
@@ -403,15 +458,16 @@ def scrape_hashtag(
     with output_path.open("a", encoding="utf-8") as out_file:
         for host in settings.scraper.nitter_hosts:
             hosts_tried.append(host)
+            remaining = progress.remaining() if progress is not None else min_tweets - collected
             result = _attempt_host(
-                driver, hashtag, host, cutoff, min_tweets - collected, out_file, seen_ids, settings
+                driver, hashtag, host, cutoff, remaining, out_file, seen_ids, settings, progress
             )
             collected += result["collected"]
             parse_errors += result["parse_errors"]
             errors.extend(result["errors"])
             backoff_triggered = backoff_triggered or result["backoff_triggered"]
 
-            if collected >= min_tweets:
+            if _target_reached(collected, min_tweets, progress):
                 break
             # A host can stop short of min_tweets without being "exhausted" (rate-limited)
             # at all — it can just legitimately run out of pages, or hit the lookback
@@ -442,15 +498,16 @@ def _scrape_one_hashtag(
 
     Safe to run concurrently with other hashtags: each call gets its own Selenium
     session, its own rate limiter, its own in-memory dedup sets (scoped inside
-    scrape_hashtag), and writes only to its own hashtag-specific output file — there is
-    no mutable state shared across hashtags that would need locking. driver_path is
-    pre-resolved once by the caller (see main()) rather than re-resolved here, since
-    ChromeDriverManager's cache isn't safe under several workers touching it at once.
+    scrape_hashtag), and writes only to its own hashtag-specific output file. The one
+    piece of shared state is the run-wide collected counter (_WORKER_PROGRESS, set by
+    the pool initializer), which is internally locked. driver_path is pre-resolved once
+    by the caller (see main()) rather than re-resolved here, since ChromeDriverManager's
+    cache isn't safe under several workers touching it at once.
     """
     logger.info("starting hashtag scrape", extra={"extra_fields": {"hashtag": hashtag}})
     try:
         with get_driver(headless=settings.scraper.headless, driver_path=driver_path) as driver:
-            return scrape_hashtag(driver, hashtag, hours, min_tweets, output_path, settings)
+            return scrape_hashtag(driver, hashtag, hours, min_tweets, output_path, settings, _WORKER_PROGRESS)
     except (ScrapeTimeoutError, WebDriverException) as exc:
         logger.error(
             "hashtag scrape failed",
@@ -488,7 +545,6 @@ def main() -> None:
     args = parser.parse_args()
 
     hashtags = [tag.strip().lstrip("#") for tag in args.hashtags.split(",") if tag.strip()]
-    per_hashtag_target = max(1, args.min_tweets // len(hashtags))
 
     run_timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     raw_dir = Path(settings.storage.raw_dir)
@@ -500,22 +556,31 @@ def main() -> None:
     # why concurrent workers each resolving their own driver path is unsafe.
     driver_path = resolve_driver_path()
 
+    # One shared target for the whole run rather than args.min_tweets // len(hashtags)
+    # per worker: a hashtag with plenty of supply keeps collecting to cover one that
+    # runs dry, instead of both stopping at their fixed slice. Each worker is still
+    # capped at args.min_tweets on its own so a bug in the shared counter can't make a
+    # single hashtag run away.
     summaries: list[dict[str, Any]] = []
-    with ProcessPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            executor.submit(
-                _scrape_one_hashtag,
-                hashtag,
-                args.hours,
-                per_hashtag_target,
-                raw_dir / f"{hashtag}_{run_timestamp}.jsonl",
-                settings,
-                driver_path,
-            ): hashtag
-            for hashtag in hashtags
-        }
-        for future in as_completed(futures):
-            summaries.append(future.result())
+    with multiprocessing.Manager() as manager:
+        progress = _SharedProgress(manager.Value("i", 0), manager.Lock(), args.min_tweets)
+        with ProcessPoolExecutor(
+            max_workers=worker_count, initializer=_init_worker, initargs=(progress,)
+        ) as executor:
+            futures = {
+                executor.submit(
+                    _scrape_one_hashtag,
+                    hashtag,
+                    args.hours,
+                    args.min_tweets,
+                    raw_dir / f"{hashtag}_{run_timestamp}.jsonl",
+                    settings,
+                    driver_path,
+                ): hashtag
+                for hashtag in hashtags
+            }
+            for future in as_completed(futures):
+                summaries.append(future.result())
 
     total_collected = sum(summary["collected"] for summary in summaries)
 
