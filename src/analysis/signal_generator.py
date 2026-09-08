@@ -24,7 +24,15 @@ from src.utils.logger import get_logger, set_level, write_run_summary
 
 logger = get_logger("signal_generator")
 
-OUTPUT_COLUMNS = ["bucket_start", "hashtag", "composite_signal", "ci_lower", "ci_upper", "tweet_count"]
+OUTPUT_COLUMNS = [
+    "bucket_start",
+    "hashtag",
+    "composite_signal",
+    "ci_lower",
+    "ci_upper",
+    "tweet_count",
+    "sentiment_coverage",
+]
 
 
 def bucket_tweets(df: pd.DataFrame, bucket_minutes: int) -> pd.DataFrame:
@@ -129,6 +137,11 @@ def _bucket_result(
         "ci_lower": ci_lower,
         "ci_upper": ci_upper,
         "tweet_count": len(group),
+        # Fraction of the bucket's tweets the sentiment lexicon actually matched — low
+        # coverage means a near-zero signal is "couldn't read it", not "balanced".
+        "sentiment_coverage": (
+            float(group["sentiment_matched"].mean()) if "sentiment_matched" in group else 0.0
+        ),
     }
 
 

@@ -109,7 +109,9 @@ analysis:
   # Terms are matched with word-boundary regex against tweet text. Prefer specific
   # multi-word phrases over single words that get used neutrally in trading chatter
   # (e.g. bare "resistance"), and avoid terms that are substrings of an opposite-polarity
-  # phrase (e.g. bare "short" inside bullish "short covering").
+  # phrase (e.g. bare "short" inside bullish "short covering"). The Romanised-Hindi
+  # ("Hinglish") terms are the ones that actually move Indian retail trading chatter;
+  # sentiment_coverage in the signal output shows how often the lexicon matched at all.
   sentiment_lexicon:
     bullish:
       - "breakout"
@@ -122,6 +124,18 @@ analysis:
       - "upside"
       - "target hit"
       - "accumulate"
+      # Hinglish
+      - "tezi"
+      - "teji"
+      - "upar jayega"
+      - "upar jaega"
+      - "chadhega"
+      - "badhega"
+      - "kharido"
+      - "khareedo"
+      - "long banao"
+      - "buy karo"
+      - "bullish view"
     bearish:
       - "breakdown"
       - "sell"
@@ -133,6 +147,18 @@ analysis:
       - "downside"
       - "stop loss hit"
       - "dump"
+      # Hinglish
+      - "mandi"
+      - "giravat"
+      - "girega"
+      - "gir jayega"
+      - "neeche jayega"
+      - "neeche aayega"
+      - "tootega"
+      - "becho"
+      - "bech do"
+      - "short karo"
+      - "bearish view"
 
 aggregation:
   # pandas offset aliases — lowercase since pandas 2.2 ('1H'/'1D' are deprecated).

@@ -74,13 +74,9 @@ def _is_negated(text_normalized: str, match_start: int) -> bool:
     return any(word.strip(".,!?;:'\"") in _NEGATION_WORDS for word in preceding)
 
 
-def sentiment_score(text_normalized: str, bullish_terms: list[str], bearish_terms: list[str]) -> float:
-    """Lexicon-based sentiment in [-1, 1] from bullish/bearish term matches, with negation
-    flipping a match's polarity when preceded by a negation word.
-
-    (bullish_count - bearish_count) / (bullish_count + bearish_count); 0.0 when no
-    lexicon terms match (neutral/unknown, not a guess in either direction).
-    """
+def _count_polarity(text_normalized: str, bullish_terms: list[str], bearish_terms: list[str]) -> tuple[int, int]:
+    """(effective bullish count, effective bearish count) of lexicon matches in the text,
+    with a negation word in the preceding window flipping a match's polarity."""
     bullish_count = 0
     bearish_count = 0
     for term in bullish_terms:
@@ -99,10 +95,29 @@ def sentiment_score(text_normalized: str, bullish_terms: list[str], bearish_term
             bullish_count += 1
         else:
             bearish_count += 1
+    return bullish_count, bearish_count
+
+
+def sentiment_score(text_normalized: str, bullish_terms: list[str], bearish_terms: list[str]) -> float:
+    """Lexicon-based sentiment in [-1, 1] from bullish/bearish term matches, with negation
+    flipping a match's polarity when preceded by a negation word.
+
+    (bullish_count - bearish_count) / (bullish_count + bearish_count); 0.0 when no
+    lexicon terms match (neutral/unknown, not a guess in either direction).
+    """
+    bullish_count, bearish_count = _count_polarity(text_normalized, bullish_terms, bearish_terms)
     total = bullish_count + bearish_count
     if total == 0:
         return 0.0
     return (bullish_count - bearish_count) / total
+
+
+def sentiment_lexicon_hit(text_normalized: str, bullish_terms: list[str], bearish_terms: list[str]) -> bool:
+    """Whether the sentiment lexicon matched this tweet at all. Aggregated per bucket into
+    `sentiment_coverage` so a zero signal from a genuinely balanced bucket is
+    distinguishable from one the (mostly English) lexicon simply couldn't read."""
+    bullish_count, bearish_count = _count_polarity(text_normalized, bullish_terms, bearish_terms)
+    return (bullish_count + bearish_count) > 0
 
 
 def hashtag_momentum(bucket_hashtags: list[list[str]], target_hashtags: set[str]) -> dict[str, float]:
@@ -143,6 +158,7 @@ def build_feature_frame(df: pd.DataFrame, config: AnalysisConfig) -> pd.DataFram
     bullish = config.sentiment_lexicon.bullish
     bearish = config.sentiment_lexicon.bearish
     out["sentiment"] = out["text_normalized"].apply(lambda t: sentiment_score(t, bullish, bearish))
+    out["sentiment_matched"] = out["text_normalized"].apply(lambda t: sentiment_lexicon_hit(t, bullish, bearish))
 
     return out
 

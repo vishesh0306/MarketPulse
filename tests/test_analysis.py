@@ -17,6 +17,7 @@ from src.analysis.feature_engineering import (
 )
 from src.analysis.signal_generator import (
     _bucket_result,  # tested directly since joblib's subprocess workers hide it from coverage
+    OUTPUT_COLUMNS,
     bootstrap_confidence_interval,
     bucket_tweets,
     composite_signal,
@@ -242,7 +243,7 @@ def test_generate_signals_empty_processed_dir_returns_empty_frame(tmp_path) -> N
 
     result = generate_signals(processed_dir, load_settings())
     assert result.empty
-    assert list(result.columns) == ["bucket_start", "hashtag", "composite_signal", "ci_lower", "ci_upper", "tweet_count"]
+    assert list(result.columns) == OUTPUT_COLUMNS
 
 
 def test_rollup_empty_returns_empty() -> None:
@@ -284,7 +285,7 @@ def test_generate_signals_end_to_end(tmp_path) -> None:
     settings = load_settings()
     result = generate_signals(processed_dir, settings)
 
-    assert list(result.columns) == ["bucket_start", "hashtag", "composite_signal", "ci_lower", "ci_upper", "tweet_count"]
+    assert list(result.columns) == OUTPUT_COLUMNS
     assert len(result) == 1
     assert result.iloc[0]["hashtag"] == "nifty50"
     assert result.iloc[0]["tweet_count"] == 20

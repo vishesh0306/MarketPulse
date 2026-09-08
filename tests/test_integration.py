@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.analysis.signal_generator import generate_signals
+from src.analysis.signal_generator import OUTPUT_COLUMNS, generate_signals
 from src.processing.storage import process_raw_files
 from src.utils.config_loader import load_settings
 
@@ -78,10 +78,11 @@ def test_raw_to_processed_to_signals_pipeline(tmp_path: Path) -> None:
 
     signals = generate_signals(processed_dir, settings)
     assert not signals.empty
-    assert list(signals.columns) == [
-        "bucket_start", "hashtag", "composite_signal", "ci_lower", "ci_upper", "tweet_count",
-    ]
+    assert list(signals.columns) == OUTPUT_COLUMNS
     assert set(signals["hashtag"]) == {"nifty50", "sensex"}
-    assert (signals["ci_lower"] <= signals["composite_signal"]).all()
-    assert (signals["composite_signal"] <= signals["ci_upper"]).all()
+    scored = signals.dropna(subset=["composite_signal"])
+    assert not scored.empty
+    assert (scored["ci_lower"] <= scored["composite_signal"]).all()
+    assert (scored["composite_signal"] <= scored["ci_upper"]).all()
     assert (signals["tweet_count"] > 0).all()
+    assert signals["sentiment_coverage"].between(0.0, 1.0).all()

@@ -6,12 +6,26 @@ from __future__ import annotations
 
 import pandas as pd
 
+_KEYS = ["hashtag", "bucket_start"]
+
+
+def _weighted_mean(df: pd.DataFrame, value_col: str, weight_col: str) -> pd.Series:
+    """Per-group weighted mean of value_col by weight_col, over rows where value_col is
+    not null. Groups with no non-null rows come back as NaN."""
+    rows = df.dropna(subset=[value_col])
+    num = (rows[value_col] * rows[weight_col]).groupby([rows["hashtag"], rows["bucket_start"]]).sum()
+    den = rows[weight_col].groupby([rows["hashtag"], rows["bucket_start"]]).sum()
+    return (num / den).rename(value_col)
+
 
 def rollup(bucketed_signals: pd.DataFrame, window: str) -> pd.DataFrame:
     """Aggregates bucket-level signals to a coarser window (e.g. '1h', '1d').
 
     Coarser-window values are tweet-count-weighted averages of the finer buckets, so a
     15-minute bucket with 200 tweets influences the daily rollup more than one with 2.
+    Volume (tweet_count) sums over every fine bucket; the signal, interval and sentiment
+    coverage are weighted means over the fine buckets that carry a value, so a run of
+    suppressed thin buckets neither drags the coarse signal toward zero nor blanks it.
     """
     if bucketed_signals.empty:
         return bucketed_signals.copy()
@@ -21,37 +35,13 @@ def rollup(bucketed_signals: pd.DataFrame, window: str) -> pd.DataFrame:
     # normalize here so an old-style config value keeps working without the warning.
     df["bucket_start"] = df["bucket_start"].dt.floor(window.lower())
 
-    keys = ["hashtag", "bucket_start"]
+    parts: list[pd.Series] = [df.groupby(_KEYS, observed=True)["tweet_count"].sum()]
+    for col in ("composite_signal", "ci_lower", "ci_upper", "sentiment_coverage"):
+        if col in df.columns:
+            parts.append(_weighted_mean(df, col, "tweet_count"))
 
-    # Volume rolls up over every fine bucket, including the ones whose signal was
-    # suppressed for being too thin — the coarse bucket's tweet_count is still the full
-    # count.
-    volume = df.groupby(keys, observed=True)["tweet_count"].sum().rename("tweet_count")
-
-    # Signal and interval roll up as a tweet-count-weighted average over only the fine
-    # buckets that carry a signal, so a run of suppressed buckets doesn't drag the coarse
-    # value toward zero or leave it undefined.
-    scored = df.dropna(subset=["composite_signal"]).copy()
-    weighted = scored.assign(
-        _w_signal=scored["composite_signal"] * scored["tweet_count"],
-        _w_ci_lower=scored["ci_lower"] * scored["tweet_count"],
-        _w_ci_upper=scored["ci_upper"] * scored["tweet_count"],
-    )
-    agg = weighted.groupby(keys, observed=True).agg(
-        _w_signal=("_w_signal", "sum"),
-        _w_ci_lower=("_w_ci_lower", "sum"),
-        _w_ci_upper=("_w_ci_upper", "sum"),
-        _scored_tweets=("tweet_count", "sum"),
-    )
-    agg["composite_signal"] = agg["_w_signal"] / agg["_scored_tweets"]
-    agg["ci_lower"] = agg["_w_ci_lower"] / agg["_scored_tweets"]
-    agg["ci_upper"] = agg["_w_ci_upper"] / agg["_scored_tweets"]
-
-    out = (
-        volume.to_frame()
-        .join(agg[["composite_signal", "ci_lower", "ci_upper"]], how="left")
-        .reset_index()
-    )
-    return out[["hashtag", "bucket_start", "composite_signal", "ci_lower", "ci_upper", "tweet_count"]].sort_values(
-        keys
-    ).reset_index(drop=True)
+    out = pd.concat(parts, axis=1).reset_index()
+    ordered = ["hashtag", "bucket_start", "composite_signal", "ci_lower", "ci_upper", "tweet_count"]
+    if "sentiment_coverage" in out.columns:
+        ordered.append("sentiment_coverage")
+    return out[ordered].sort_values(_KEYS).reset_index(drop=True)
