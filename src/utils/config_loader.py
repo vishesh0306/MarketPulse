@@ -116,6 +116,35 @@ class LoggingConfig(BaseModel):
     dir: str
 
 
+class RealtimeRssConfig(BaseModel):
+    path_template: str
+    poll_interval_seconds: float
+    request_timeout_seconds: float
+    max_items_per_poll: int
+
+
+class RealtimeDedupConfig(BaseModel):
+    id_prefix: str
+    content_prefix: str
+    ttl_seconds: int
+
+
+class RealtimeApiConfig(BaseModel):
+    host: str
+    port: int
+
+
+class RealtimeConfig(BaseModel):
+    redis_url: str
+    backfill_hours: int
+    bucket_seal_grace_seconds: int
+    queue_maxsize: int
+    queue_full_policy: Literal["block", "drop_oldest"]
+    rss: RealtimeRssConfig
+    dedup: RealtimeDedupConfig
+    api: RealtimeApiConfig
+
+
 class Settings(BaseModel):
     scraper: ScraperConfig
     storage: StorageConfig
@@ -124,6 +153,7 @@ class Settings(BaseModel):
     aggregation: AggregationConfig
     visualization: VisualizationConfig
     logging: LoggingConfig = Field(alias="logging")
+    realtime: RealtimeConfig
 
     model_config = {"populate_by_name": True}
 

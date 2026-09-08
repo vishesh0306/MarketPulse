@@ -173,3 +173,31 @@ visualization:
 logging:
   level: "INFO"
   dir: "logs"
+
+# Real-time service (src/realtime). The batch scraper still does the initial 24h backfill;
+# this layer tails Nitter's RSS endpoint and maintains an incremental per-bucket signal.
+realtime:
+  # Overridable with the REDIS_URL env var (see docker-compose: the 'redis' service).
+  redis_url: "redis://localhost:6379/0"
+  backfill_hours: 24
+  # How long past a 15-minute bucket's end to keep accepting late-arriving tweets before
+  # sealing it to Parquet and pushing it to WebSocket subscribers.
+  bucket_seal_grace_seconds: 120
+  # Bounded hand-off between the RSS collectors and the signal updater. "block" applies
+  # backpressure to the collectors; "drop_oldest" keeps the freshest tweets under load.
+  queue_maxsize: 5000
+  queue_full_policy: "block"
+  rss:
+    # Nitter's RSS feed: one HTTP GET, no browser, no JS challenge — the right tool for a
+    # frequent polling loop. Selenium stays the tool for the deep backfill (cursor paging).
+    path_template: "https://{host}/search/rss?f=tweets&q=%23{hashtag}"
+    poll_interval_seconds: 20
+    request_timeout_seconds: 15
+    max_items_per_poll: 100
+  dedup:
+    id_prefix: "marketpulse:id:"
+    content_prefix: "marketpulse:content:"
+    ttl_seconds: 172800          # 48h — one lookback window plus margin
+  api:
+    host: "0.0.0.0"
+    port: 8000
