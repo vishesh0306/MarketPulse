@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>#nifty50 - Nitter</title>
+    <link>https://nitter.example.com/search</link>
+    <description>Twitter feed for: #nifty50</description>
+    <language>en-us</language>
+    <item>
+      <title>Nifty breakout above 24000, tezi continues @rbi #nifty50 #banknifty</title>
+      <dc:creator>@trader_raj</dc:creator>
+      <description>&lt;p&gt;Nifty breakout above 24000, tezi continues&lt;/p&gt;</description>
+      <pubDate>Mon, 08 Sep 2026 06:15:00 GMT</pubDate>
+      <guid>https://nitter.example.com/trader_raj/status/2097291464778957244#m</guid>
+      <link>https://nitter.example.com/trader_raj/status/2097291464778957244#m</link>
+    </item>
+    <item>
+      <title>Sensex mandi, girega further tomorrow #sensex</title>
+      <dc:creator>@bear_mkt</dc:creator>
+      <description>&lt;p&gt;Sensex mandi, girega further tomorrow&lt;/p&gt;</description>
+      <pubDate>Mon, 08 Sep 2026 06:12:30 GMT</pubDate>
+      <guid>https://nitter.example.com/bear_mkt/status/2097290744939925785#m</guid>
+      <link>https://nitter.example.com/bear_mkt/status/2097290744939925785#m</link>
+    </item>
+    <item>
+      <title></title>
+      <description>&lt;p&gt;Fallback body text used when title is empty #intraday&lt;/p&gt;</description>
+      <pubDate>Mon, 08 Sep 2026 06:10:00 GMT</pubDate>
+      <guid>https://nitter.example.com/some_user/status/2097289476255146298#m</guid>
+      <link>https://nitter.example.com/some_user/status/2097289476255146298#m</link>
+    </item>
+    <item>
+      <title>Retweet with no parseable status link</title>
+      <link>https://nitter.example.com/i/broken</link>
+    </item>
+  </channel>
+</rss>
