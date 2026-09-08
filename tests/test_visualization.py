@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from src.visualization.streaming_plots import (
+    _to_display_time,
     iter_plot_all,
     plot_hashtag_engagement_distribution,
     plot_signal_with_ci,
@@ -128,3 +129,22 @@ def test_iter_plot_all_peak_memory_bounded_by_sample_size(tmp_path: Path, bucket
     # Loose bound: peak memory should be a small multiple of the sample size, nowhere
     # near proportional to n_rows (20,000 rows would blow well past this if unbounded).
     assert peak_bytes < 60 * 1024 * 1024  # 60MB
+
+
+def test_display_time_converts_utc_to_ist() -> None:
+    """Timestamps are stored in UTC, but these are charts of an Indian market. Plotting
+    UTC put the NSE session (09:15-15:30 IST) at 03:45-10:00 on the axis, so the busiest
+    part of the trading day appeared to happen at four in the morning."""
+    df = pd.DataFrame(
+        {
+            "bucket_start": pd.to_datetime(["2026-09-08T03:45:00Z", "2026-09-08T10:00:00Z"], utc=True),
+            "hashtag": ["nifty50", "nifty50"],
+        }
+    )
+
+    out = _to_display_time(df)
+
+    # 03:45 UTC is 09:15 IST — the NSE open; 10:00 UTC is 15:30 IST — the close.
+    assert [t.strftime("%H:%M") for t in out["bucket_start"]] == ["09:15", "15:30"]
+    assert out["bucket_start"].dt.tz is None, "tz dropped so matplotlib prints wall-clock as given"
+    assert df["bucket_start"].dt.tz is not None, "must not mutate the caller's frame"

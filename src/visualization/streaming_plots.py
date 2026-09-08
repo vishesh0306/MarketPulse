@@ -14,6 +14,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # headless: no display backend needed to write PNGs
 
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 import pyarrow.dataset as ds
@@ -49,6 +50,9 @@ _INK_SECONDARY = "#52514e"
 _INK_MUTED = "#898781"
 _GRIDLINE = "#e1e0d9"
 _BASELINE = "#c3c2b7"
+
+# Charts of an Indian market are read in IST, even though timestamps are stored in UTC.
+_DISPLAY_TZ = "Asia/Kolkata"
 
 
 def _hashtag_colors(hashtags: list[str]) -> dict[str, str]:
@@ -89,8 +93,35 @@ def _iter_processed_rows(processed_dir: Path) -> Iterator[dict[str, Any]]:
         yield from batch.to_pylist()
 
 
+def _to_display_time(bucketed: pd.DataFrame) -> pd.DataFrame:
+    """Converts bucket_start from stored UTC to IST for display.
+
+    Timestamps are stored in UTC — correct, unambiguous — but these are charts of an
+    Indian market, read by people who think in IST. Plotting UTC puts the NSE session
+    (09:15-15:30 IST) at 03:45-10:00 on the axis, so the busiest part of the trading day
+    appears to happen at four in the morning. The tz is dropped after conversion so
+    matplotlib formats exactly the local wall-clock time it is handed.
+    """
+    out = bucketed.copy()
+    stamps = pd.to_datetime(out["bucket_start"], utc=True).dt.tz_convert(_DISPLAY_TZ)
+    out["bucket_start"] = stamps.dt.tz_localize(None)
+    return out
+
+
+def _format_time_axis(ax: plt.Axes, span_days: float) -> None:
+    """Applies an unambiguous time format.
+
+    matplotlib's default for a sub-day range that straddles midnight is `%m-%d %H`, which
+    renders as "09-08 04" and reads like a three-part date rather than a time. Spell the
+    month out and separate the clock time so there is nothing to misread.
+    """
+    fmt = "%d %b %H:%M" if span_days > 1 else "%H:%M"
+    ax.xaxis.set_major_formatter(mdates.DateFormatter(fmt))
+
+
 def plot_volume_over_time(bucketed: pd.DataFrame, output_path: Path, dpi: int) -> None:
     """Tweet-volume-over-time plot from aggregated bucket data (not raw tweets)."""
+    bucketed = _to_display_time(bucketed)
     fig, ax = plt.subplots(figsize=(10, 5), facecolor=_SURFACE)
     _style_axes(ax)
 
@@ -102,7 +133,9 @@ def plot_volume_over_time(bucketed: pd.DataFrame, output_path: Path, dpi: int) -
             label=f"#{hashtag}", color=colors[hashtag], linewidth=2,
         )
 
-    ax.set_xlabel("Time")
+    span = (bucketed["bucket_start"].max() - bucketed["bucket_start"].min()).total_seconds() / 86400
+    _format_time_axis(ax, span)
+    ax.set_xlabel("Time (IST)")
     ax.set_ylabel("Tweets per 15-min bucket")
     ax.set_title("Tweet Volume Over Time", color=_INK_PRIMARY, fontsize=13, fontweight="bold")
     ax.legend(frameon=False, labelcolor=_INK_SECONDARY)
@@ -119,6 +152,7 @@ def plot_signal_with_ci(bucketed: pd.DataFrame, output_path: Path, dpi: int) -> 
     One subplot per hashtag (small multiples) rather than overlapping filled CI bands on
     a single axes — four semi-transparent bands on top of each other is unreadable.
     """
+    bucketed = _to_display_time(bucketed)
     hashtags = sorted(bucketed["hashtag"].unique().tolist())
     colors = _hashtag_colors(hashtags)
 
@@ -136,8 +170,10 @@ def plot_signal_with_ci(bucketed: pd.DataFrame, output_path: Path, dpi: int) -> 
         ax.axhline(0, color=_BASELINE, linewidth=0.8)
         ax.set_ylabel(f"#{hashtag}", color=_INK_SECONDARY, fontsize=10)
 
+    span = (bucketed["bucket_start"].max() - bucketed["bucket_start"].min()).total_seconds() / 86400
+    _format_time_axis(axes[-1], span)
     axes[0].set_title("Composite Signal Over Time (shaded = confidence interval)", color=_INK_PRIMARY, fontsize=13, fontweight="bold")
-    axes[-1].set_xlabel("Time")
+    axes[-1].set_xlabel("Time (IST)")
     fig.autofmt_xdate()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
