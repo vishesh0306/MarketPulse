@@ -89,23 +89,54 @@ python -m src.visualization.streaming_plots --input data/output --processed data
 
 ### What a real run produces
 
-`docs/sample_output/` holds the output of an actual run, committed so you can see the
-shape of every stage without collecting anything yourself:
+Everything below is the output of an actual run — **2,561 rows covering 2,000 distinct
+tweets** across eight hashtags, collected in about 16 minutes including two rate-limit
+pauses. All of it is committed under [`docs/sample_output/`](docs/sample_output/), so you
+can inspect the results without collecting anything yourself.
 
-| File | From that run |
+**Tweet volume per 15-minute bucket**
+
+![Tweet volume over time](docs/sample_output/sample_volume.png)
+
+**Composite signal with confidence intervals** — one panel per hashtag; gaps are buckets
+suppressed for holding too few tweets to support an interval:
+
+![Composite signal with confidence intervals](docs/sample_output/sample_plot.png)
+
+**Engagement distribution across hashtags**
+
+![Hashtag engagement distribution](docs/sample_output/sample_engagement.png)
+
+**The signal itself**, strongest buckets from that run (times IST):
+
+| Hashtag | Bucket | Signal | 90% CI | Tweets | Lexicon coverage |
+|---|---|---|---|---|---|
+| `#sensex` | 10:00 | **+0.230** | [+0.061, +0.400] | 6 | 50% |
+| `#banknifty` | 11:30 | −0.147 | [−0.408, +0.114] | 6 | 67% |
+| `#nifty50` | 14:00 | −0.126 | [−0.261, +0.008] | 7 | 43% |
+| `#nifty50` | 10:45 | +0.102 | [−0.008, +0.212] | 8 | 25% |
+| `#banknifty` | 10:30 | +0.099 | [−0.009, +0.208] | 9 | 22% |
+
+133 buckets in total: **64 scored, 69 suppressed**. Only the `#sensex` 10:00 bucket has an
+interval clearly excluding zero — on this sample **2 of 64 scored buckets** are
+directionally actionable. That is the honest picture at this volume, and it is why the
+suppression rule and `sentiment_coverage` exist: a bucket built on six tweets, half of
+which the lexicon can read, does not support a confident call, and the output says so
+rather than implying otherwise.
+
+| File | Contents |
 |---|---|
-| [`sample_raw_tweets.jsonl`](docs/sample_output/sample_raw_tweets.jsonl) | 100 tweets as collected — real usernames, timestamps, engagement counts |
+| [`sample_raw_tweets.jsonl`](docs/sample_output/sample_raw_tweets.jsonl) | 100 tweets as collected — real usernames, timestamps, engagement |
 | [`sample_processed.parquet`](docs/sample_output/sample_processed.parquet) | 100 rows after cleaning, Unicode normalisation and dedup |
-| [`sample_signals.parquet`](docs/sample_output/sample_signals.parquet) | all 133 signal buckets, 64 scored and 69 suppressed as too thin |
-| [`sample_plot.png`](docs/sample_output/sample_plot.png) | composite signal per hashtag with confidence bands |
+| [`sample_signals.parquet`](docs/sample_output/sample_signals.parquet) | all 133 buckets with signal, CI, volume and coverage |
+| `sample_volume.png` · `sample_plot.png` · `sample_engagement.png` | the three charts above |
 
-That run collected **2,561 rows covering 2,000 distinct tweets** across eight hashtags in
-about 16 minutes, including two rate-limit pauses. Your own numbers will differ with
-market activity and the time of day you run — see the note on the trading session below —
-but the files and their columns will look the same.
+Your own numbers will differ with market activity and the time of day you collect — see
+[Targeting the trading session](#targeting-the-trading-session) — but the files and their
+columns will look the same.
 
 ```bash
-# peek at the committed sample without running anything
+# inspect the committed signal output without running anything
 python -c "import pandas as pd; print(pd.read_parquet('docs/sample_output/sample_signals.parquet').head())"
 ```
 
