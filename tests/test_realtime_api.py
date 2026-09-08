@@ -17,6 +17,7 @@ from src.utils.config_loader import load_settings
 @pytest.fixture
 def supervisor(tmp_path: Path) -> TailSupervisor:
     settings = load_settings().model_copy(deep=True)
+    settings.storage.processed_dir = str(tmp_path / "empty-processed")  # nothing to warm-start from
     sup = TailSupervisor(
         settings,
         RedisDedupStore(fakeredis.aioredis.FakeRedis(decode_responses=True)),

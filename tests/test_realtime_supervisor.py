@@ -112,6 +112,47 @@ async def test_supervisor_dedups_repeated_polls(tmp_path: Path) -> None:
     assert sum(int(r["tweet_count"]) for r in history) == 3
 
 
+def test_warm_start_ingests_recent_processed_tweets(tmp_path: Path) -> None:
+    import pandas as pd
+
+    settings = _settings_fast()
+    now = pd.Timestamp.now(tz="UTC")
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    pd.DataFrame(
+        [
+            {"tweet_id": str(i), "source_hashtag": "nifty50", "username": f"u{i}",
+             "text_normalized": "nifty breakout rally", "hashtags": ["nifty50"],
+             "created_at": (now - pd.Timedelta(minutes=30)).isoformat()}
+            for i in range(6)
+        ]
+        + [
+            {"tweet_id": "old", "source_hashtag": "nifty50", "username": "old",
+             "text_normalized": "ancient tweet", "hashtags": ["nifty50"],
+             "created_at": (now - pd.Timedelta(days=5)).isoformat()}
+        ]
+    ).to_parquet(processed / "part-0.parquet")
+
+    sup = TailSupervisor(
+        settings,
+        RedisDedupStore(fakeredis.aioredis.FakeRedis(decode_responses=True)),
+        build_engine(settings),
+        output_dir=tmp_path,
+    )
+    ingested = sup.warm_start(processed_dir=processed)
+    assert ingested == 6  # the 5-day-old tweet is outside backfill_hours
+
+
+def test_warm_start_missing_processed_dir_is_a_noop(tmp_path: Path) -> None:
+    sup = TailSupervisor(
+        _settings_fast(),
+        RedisDedupStore(fakeredis.aioredis.FakeRedis(decode_responses=True)),
+        build_engine(_settings_fast()),
+        output_dir=tmp_path,
+    )
+    assert sup.warm_start(processed_dir=tmp_path / "nope") == 0
+
+
 async def test_enqueue_drop_oldest_policy(tmp_path: Path) -> None:
     settings = _settings_fast()
     settings.realtime.queue_maxsize = 2

@@ -118,6 +118,11 @@ class TailSupervisor:
             await self._wait(min(30.0, self._rt.rss.poll_interval_seconds))
             await self._flush_sealed(self._engine.seal_due())
 
+    async def flush_ready(self) -> None:
+        """Seal every bucket whose window has already closed — used once after warm_start
+        so backfilled history is available immediately, not only after the first tick."""
+        await self._flush_sealed(self._engine.seal_due())
+
     async def _flush_sealed(self, sealed: list[dict[str, object]]) -> None:
         if not sealed:
             return
@@ -144,6 +149,38 @@ class TailSupervisor:
             for row in self._sealed_rows:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
         tmp.replace(self._output_dir / "sealed_signals.jsonl")
+
+    # -- backfill ---------------------------------------------------------
+
+    def warm_start(self, processed_dir: Path | None = None) -> int:
+        """Feed the batch pipeline's existing processed tweets from the last
+        `backfill_hours` into the engine before the tail loop starts, so the signal
+        picks up where the 24h Selenium backfill left off rather than from empty. Returns
+        the number of tweets ingested. Missing/empty processed data is fine — just skip.
+        """
+        import pandas as pd
+
+        path = processed_dir or Path(self._settings.storage.processed_dir)
+        if not path.exists():
+            return 0
+        try:
+            df = pd.read_parquet(path)
+        except (FileNotFoundError, ValueError, OSError):
+            return 0
+        if df.empty:
+            return 0
+
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=self._rt.backfill_hours)
+        df = df[pd.to_datetime(df["created_at"], utc=True) >= cutoff]
+        ingested = 0
+        for raw in df.to_dict("records"):
+            record: dict[str, object] = {str(k): v for k, v in raw.items()}
+            record["created_at"] = pd.Timestamp(record["created_at"]).isoformat()  # type: ignore[arg-type]
+            with contextlib.suppress(KeyError, ValueError):
+                self._engine.ingest(record)
+                ingested += 1
+        logger.info("warm start complete", extra={"extra_fields": {"tweets": ingested}})
+        return ingested
 
     # -- public -----------------------------------------------------------
 

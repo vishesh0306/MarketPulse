@@ -61,8 +61,12 @@ def create_app(supervisor: TailSupervisor, hashtags: list[str]) -> FastAPI:
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        warmed = await asyncio.to_thread(supervisor.warm_start)
+        await supervisor.flush_ready()  # seal any backfilled buckets whose window has closed
         task = asyncio.create_task(supervisor.run(hashtags))
-        logger.info("realtime service up", extra={"extra_fields": {"hashtags": hashtags}})
+        logger.info(
+            "realtime service up", extra={"extra_fields": {"hashtags": hashtags, "backfill_tweets": warmed}}
+        )
         try:
             yield
         finally:
