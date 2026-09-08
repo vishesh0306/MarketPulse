@@ -130,9 +130,10 @@ analysis:
       - "dump"
 
 aggregation:
+  # pandas offset aliases — lowercase since pandas 2.2 ('1H'/'1D' are deprecated).
   rollup_windows:
-    - "1H"
-    - "1D"
+    - "1h"
+    - "1d"
 
 visualization:
   reservoir_sample_size: 5000

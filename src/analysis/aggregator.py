@@ -8,7 +8,7 @@ import pandas as pd
 
 
 def rollup(bucketed_signals: pd.DataFrame, window: str) -> pd.DataFrame:
-    """Aggregates bucket-level signals to a coarser window (e.g. '1H', '1D').
+    """Aggregates bucket-level signals to a coarser window (e.g. '1h', '1d').
 
     Coarser-window values are tweet-count-weighted averages of the finer buckets, so a
     15-minute bucket with 200 tweets influences the daily rollup more than one with 2.
@@ -17,7 +17,9 @@ def rollup(bucketed_signals: pd.DataFrame, window: str) -> pd.DataFrame:
         return bucketed_signals.copy()
 
     df = bucketed_signals.copy()
-    df["bucket_start"] = df["bucket_start"].dt.floor(window)
+    # pandas 2.2 deprecated the uppercase offset aliases ('H', 'D') in favour of lowercase;
+    # normalize here so an old-style config value keeps working without the warning.
+    df["bucket_start"] = df["bucket_start"].dt.floor(window.lower())
 
     weighted = df.assign(
         weighted_signal=df["composite_signal"] * df["tweet_count"],
