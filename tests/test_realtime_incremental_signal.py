@@ -119,6 +119,25 @@ def test_snapshot_reports_live_buckets_without_removing_them() -> None:
     assert engine.live_bucket_count == 1  # not consumed
 
 
+def test_ingest_handles_numpy_array_hashtags_and_bad_rows() -> None:
+    import numpy as np
+
+    engine = _engine()
+    engine.ingest(
+        {
+            "source_hashtag": "nifty50",
+            "created_at": datetime(2026, 9, 8, 6, 20, tzinfo=timezone.utc).isoformat(),
+            "text_normalized": "nifty breakout",
+            "hashtags": np.array(["nifty50", "banknifty"]),  # parquet round-trips lists as arrays
+        }
+    )
+    assert engine.live_bucket_count == 1
+
+    with pytest.raises(KeyError):
+        engine.ingest({"created_at": "2026-09-08T06:20:00+00:00"})  # missing source_hashtag
+    assert engine.live_bucket_count == 1  # no phantom bucket from the failed row
+
+
 def test_reservoir_is_bounded() -> None:
     acc = BucketAccumulator("nifty50", datetime(2026, 9, 8, 6, 15, tzinfo=timezone.utc), 15)
     for _ in range(1000):

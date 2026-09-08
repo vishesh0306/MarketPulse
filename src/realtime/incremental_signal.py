@@ -25,6 +25,19 @@ from src.analysis.signal_generator import bootstrap_confidence_interval
 _RESERVOIR_SIZE = 256
 
 
+def _as_iterable(value: object) -> list[object]:
+    """Normalize a record's `hashtags` field (list, tuple, numpy array, None, str) to a
+    plain list without tripping over numpy's ambiguous truth value."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    try:
+        return list(value)  # type: ignore[call-overload]
+    except TypeError:
+        return []
+
+
 def bucket_start_for(ts: datetime, bucket_minutes: int) -> datetime:
     """Floor a timestamp to its bucket boundary (UTC)."""
     ts = ts.astimezone(timezone.utc)
@@ -153,21 +166,22 @@ class IncrementalSignalEngine:
         return len(self._live)
 
     def ingest(self, record: dict[str, object]) -> None:
+        # Everything that can fail on a malformed record happens before the accumulator is
+        # touched, so a bad row never leaves an empty phantom bucket behind.
         hashtag = str(record["source_hashtag"])
         created_at = datetime.fromisoformat(str(record["created_at"]))
         start = bucket_start_for(created_at, self._bucket_minutes)
+
+        text = str(record.get("text_normalized") or record.get("text") or "")
+        sentiment = sentiment_score(text, self._bullish, self._bearish)
+        hit = sentiment_lexicon_hit(text, self._bullish, self._bearish)
+        tags = {str(t).lower() for t in _as_iterable(record.get("hashtags"))} & self._targets
+        other = max(0, len(tags | {hashtag}) - 1)
+
         key = (hashtag, start)
         acc = self._live.get(key)
         if acc is None:
-            acc = BucketAccumulator(hashtag, start, self._bucket_minutes)
-            self._live[key] = acc
-
-        text = str(record.get("text_normalized") or record.get("text", ""))
-        sentiment = sentiment_score(text, self._bullish, self._bearish)
-        hit = sentiment_lexicon_hit(text, self._bullish, self._bearish)
-        raw_tags = record.get("hashtags") or []
-        tags = {str(t).lower() for t in raw_tags} & self._targets if isinstance(raw_tags, (list, tuple, set)) else set()
-        other = max(0, len(tags | {hashtag}) - 1)
+            acc = self._live[key] = BucketAccumulator(hashtag, start, self._bucket_minutes)
         acc.add(sentiment, hit, other)
 
     def seal_due(self, now: datetime | None = None) -> list[dict[str, object]]:

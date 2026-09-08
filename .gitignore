@@ -26,6 +26,7 @@ data/processed/*
 data/output/*
 data/output/signals/*
 data/output/plots/*
+data/output/realtime/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/processed/_rejects/
