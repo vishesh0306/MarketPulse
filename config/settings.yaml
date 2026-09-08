@@ -2,19 +2,37 @@
 # Nothing in src/ should hardcode a value that belongs here.
 
 scraper:
+  # The four hashtags named in the assignment. Always collected.
   hashtags:
     - nifty50
     - sensex
     - intraday
     - banknifty
+  # "Similar hashtags" (assignment's wording) for the same Indian-market chatter, collected
+  # alongside the core four to reach the 2,000-tweet target given how thin and rate-limited
+  # the public Nitter mirrors are. Overlap with the core four is expected and handled by
+  # dedup (tweet_id + content hash). #giftnifty in particular trades outside NSE cash hours
+  # and helps populate the otherwise near-empty overnight buckets.
+  related_hashtags:
+    - nifty
+    - niftybank
+    - giftnifty
+    - stockmarket
+    - sharemarket
+    - nse
   # x.com's own search UI requires a login. Nitter is an open-source, login-free front-end
   # for the same public content, so collection targets it instead. No official/paid API.
-  # Nitter instances are unofficial and go up/down often, hence the failover list.
+  # Nitter instances are unofficial and go up/down often, hence the long failover list —
+  # a dead host is detected and skipped, so extra candidates only ever help.
   search_path_template: "https://{host}/search?f=tweets&q=%23{hashtag}"
   nitter_hosts:
-    - "nitter.tiekoetter.com"
     - "xcancel.com"
+    - "nitter.poast.org"
+    - "nitter.tiekoetter.com"
+    - "lightbrd.com"
+    - "nitter.privacyredirect.com"
     - "nitter.net"
+    - "nitter.space"
   hours_lookback: 24
   min_tweets_target: 2000
   headless: true

@@ -167,7 +167,7 @@ def generate_signals(processed_dir: Path, config: Settings) -> pd.DataFrame:
     # merged back as a per-row column — a bootstrap resample of a bucket's rows leaves
     # this column constant, which is intentional: momentum isn't attributable to any one
     # tweet within the bucket.
-    target_hashtags = set(config.scraper.hashtags)
+    target_hashtags = set(config.scraper.all_hashtags)
     momentum_rows = []
     for (hashtag, bucket_start), group in df.groupby(["source_hashtag", "bucket_start"], observed=True):
         momentum_map = hashtag_momentum(group["hashtags"].tolist(), target_hashtags)

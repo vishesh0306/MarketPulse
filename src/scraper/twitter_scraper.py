@@ -512,6 +512,19 @@ def _scrape_one_hashtag(
     by the caller (see main()) rather than re-resolved here, since ChromeDriverManager's
     cache isn't safe under several workers touching it at once.
     """
+    # Nothing left to do — a worker that only starts after the shared target is already
+    # met shouldn't spin up a whole browser to fetch one page and immediately stop.
+    if _WORKER_PROGRESS is not None and _WORKER_PROGRESS.remaining() <= 0:
+        return {
+            "hashtag": hashtag,
+            "collected": 0,
+            "unique_ids": 0,
+            "parse_errors": 0,
+            "errors": [],
+            "backoff_triggered": False,
+            "hosts_tried": [],
+        }
+
     logger.info("starting hashtag scrape", extra={"extra_fields": {"hashtag": hashtag}})
     try:
         with get_driver(headless=settings.scraper.headless, driver_path=driver_path) as driver:
@@ -538,7 +551,10 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Scrape Indian market-hashtag tweets via Nitter/Selenium.")
     parser.add_argument(
-        "--hashtags", type=str, default=",".join(settings.scraper.hashtags), help="Comma-separated hashtags, no '#'."
+        "--hashtags",
+        type=str,
+        default=",".join(settings.scraper.all_hashtags),
+        help="Comma-separated hashtags, no '#'. Defaults to the assignment's four plus config related_hashtags.",
     )
     parser.add_argument("--hours", type=int, default=settings.scraper.hours_lookback, help="Lookback window in hours.")
     parser.add_argument(

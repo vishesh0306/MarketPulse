@@ -4,12 +4,12 @@ MarketPulse collects Indian stock-market discussion from Twitter/X, cleans and s
 
 ## What it does
 
-1. Scrapes tweets for `#nifty50`, `#sensex`, `#intraday`, and `#banknifty` with Selenium against [Nitter](https://github.com/zedeus/nitter), a login-free mirror of X.com's public content — no paid or official Twitter API.
+1. Scrapes tweets for `#nifty50`, `#sensex`, `#intraday`, and `#banknifty` — plus a few similar Indian-market hashtags (`#nifty`, `#niftybank`, `#giftnifty`, `#stockmarket`, `#sharemarket`, `#nse`) — with Selenium against [Nitter](https://github.com/zedeus/nitter), a login-free mirror of X.com's public content, failing over across a list of public instances. No paid or official Twitter API.
 2. Cleans, deduplicates, and stores the tweets as partitioned Parquet files.
 3. Converts tweet text into a composite trading signal per hashtag (TF-IDF, sentiment, engagement, hashtag momentum), filtered to NSE trading hours, with a bootstrapped confidence interval per time bucket.
 4. Plots volume, signal, and engagement trends.
 
-Collection targets 2,000 tweets in 24 hours; actual counts depend on live availability of the (unofficial, rate-limited) Nitter mirrors at run time.
+Collection targets 2,000 tweets in 24 hours; the scraper exits non-zero if it falls short (pass `--allow-shortfall` to override). Actual counts depend on live availability of the (unofficial, rate-limited) Nitter mirrors at run time. The core four hashtags and the similar-hashtag list are both in `config/settings.yaml` (`scraper.hashtags` / `scraper.related_hashtags`).
 
 ## Setup
 
@@ -30,7 +30,7 @@ Requires Python 3.11+ and Google Chrome (ChromeDriver is managed automatically).
 bash scripts/run_pipeline.sh
 
 # or step by step
-python -m src.scraper.twitter_scraper --hashtags nifty50,sensex,intraday,banknifty --hours 24 --min-tweets 2000
+python -m src.scraper.twitter_scraper --hours 24 --min-tweets 2000   # --hashtags defaults to config
 python -m src.processing.storage --input data/raw --output data/processed
 python -m src.analysis.signal_generator --input data/processed --output data/output
 python -m src.visualization.streaming_plots --input data/output --processed data/processed

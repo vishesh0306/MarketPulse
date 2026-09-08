@@ -35,7 +35,7 @@ from src.scraper.twitter_scraper import (
     main,
     scrape_hashtag,
 )
-from src.utils.config_loader import load_settings
+from src.utils.config_loader import ScraperConfig, load_settings
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "search_results.html"
 
@@ -106,6 +106,19 @@ def test_rotate_user_agent_issues_cdp_override_with_known_ua() -> None:
     ua = rotate_user_agent(driver)
     assert ua in _USER_AGENTS
     driver.execute_cdp_cmd.assert_called_once_with("Network.setUserAgentOverride", {"userAgent": ua})
+
+
+def test_all_hashtags_is_core_then_related_deduped() -> None:
+    cfg = ScraperConfig.model_construct(
+        hashtags=["nifty50", "sensex"],
+        related_hashtags=["nifty", "sensex", "nse"],  # 'sensex' overlaps the core list
+    )
+    assert cfg.all_hashtags == ["nifty50", "sensex", "nifty", "nse"]
+
+
+def test_default_config_keeps_the_four_assignment_hashtags() -> None:
+    core = load_settings().scraper.hashtags
+    assert set(core) == {"nifty50", "sensex", "intraday", "banknifty"}
 
 
 def test_scrape_one_hashtag_handles_driver_failure_gracefully(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

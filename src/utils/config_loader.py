@@ -35,7 +35,11 @@ class AntiDetectionConfig(BaseModel):
 
 
 class ScraperConfig(BaseModel):
+    # The four hashtags named in the assignment — always collected.
     hashtags: list[str]
+    # "Similar hashtags" (the assignment's phrasing) collected alongside the core four to
+    # widen coverage of Indian market chatter toward the 2,000-tweet target. Empty is fine.
+    related_hashtags: list[str] = []
     search_path_template: str
     nitter_hosts: list[str]
     hours_lookback: int
@@ -45,6 +49,14 @@ class ScraperConfig(BaseModel):
     pagination: PaginationConfig
     rate_limiter: RateLimiterConfig
     anti_detection: AntiDetectionConfig
+
+    @property
+    def all_hashtags(self) -> list[str]:
+        """Core + related, de-duplicated, order preserved (core first)."""
+        seen: dict[str, None] = {}
+        for tag in [*self.hashtags, *self.related_hashtags]:
+            seen.setdefault(tag, None)
+        return list(seen)
 
 
 class StorageConfig(BaseModel):
