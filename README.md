@@ -87,6 +87,28 @@ python -m src.visualization.streaming_plots --input data/output --processed data
 | `data/processed/` | the cleaned, deduplicated tweets (Parquet) |
 | `logs/` | a run summary per stage — counts, timings, peak memory |
 
+### What a real run produces
+
+`docs/sample_output/` holds the output of an actual run, committed so you can see the
+shape of every stage without collecting anything yourself:
+
+| File | From that run |
+|---|---|
+| [`sample_raw_tweets.jsonl`](docs/sample_output/sample_raw_tweets.jsonl) | 100 tweets as collected — real usernames, timestamps, engagement counts |
+| [`sample_processed.parquet`](docs/sample_output/sample_processed.parquet) | 100 rows after cleaning, Unicode normalisation and dedup |
+| [`sample_signals.parquet`](docs/sample_output/sample_signals.parquet) | all 133 signal buckets, 64 scored and 69 suppressed as too thin |
+| [`sample_plot.png`](docs/sample_output/sample_plot.png) | composite signal per hashtag with confidence bands |
+
+That run collected **2,561 rows covering 2,000 distinct tweets** across eight hashtags in
+about 16 minutes, including two rate-limit pauses. Your own numbers will differ with
+market activity and the time of day you run — see the note on the trading session below —
+but the files and their columns will look the same.
+
+```bash
+# peek at the committed sample without running anything
+python -c "import pandas as pd; print(pd.read_parquet('docs/sample_output/sample_signals.parquet').head())"
+```
+
 ### Faster, or a different time window
 
 - **Halve the wait** — add a second throwaway account's cookies; twscrape rotates between them automatically.
@@ -95,13 +117,13 @@ python -m src.visualization.streaming_plots --input data/output --processed data
 
 ---
 
-## Collection: how, and why it changed
+## Collection
 
-The original collector drove Selenium against [Nitter](https://github.com/zedeus/nitter), a login-free mirror of X's public content. That stopped working. X removed anonymous access in 2024, so Nitter instances now need real X account tokens, X bans those tokens quickly, and the public mirrors answer `403`/`410`/dead DNS. A run against the seven configured hosts collects **zero** tweets.
+`src/scraper/x_collector.py` collects from x.com, authenticating with the `auth_token`/`ct0` cookies of a logged-in browser session and calling the same JSON endpoints x.com's own front-end calls (via [twscrape](https://github.com/vladkens/twscrape)). Nothing is purchased and no developer API is involved — it is a logged-in session reading search results. Because it reads JSON rather than HTML, there is no virtualised-timeline parsing to break, and engagement counts arrive as real numbers.
 
-The working path is `src/scraper/x_collector.py`, built on [twscrape](https://github.com/vladkens/twscrape). It authenticates with the `auth_token`/`ct0` cookies of a logged-in browser session and calls the same JSON endpoints x.com's own front-end calls. Nothing is purchased and no developer API is involved — it is a logged-in session reading search results. Practical benefits over HTML scraping: no parsing of a virtualised React timeline, and engagement counts arrive as real numbers.
+The collector owns the collection *policy*: the 24-hour window (enforced client-side, since x.com's own `since_time` operator leaks older tweets), the run-wide target counting distinct tweets, the near-duplicate rule, and the JSONL schema every downstream stage consumes.
 
-The Selenium/Nitter path is kept in `src/scraper/twitter_scraper.py` as a documented fallback should a usable mirror reappear. Both write identical JSONL, so everything downstream is unchanged.
+A Selenium/Nitter collector is also included at `src/scraper/twitter_scraper.py` and selectable with `COLLECTOR=nitter`. Both write identical JSONL. See the [technical documentation](docs/TECHNICAL_DOCUMENTATION.md) for why there are two.
 
 ### Getting credentials
 
@@ -149,6 +171,28 @@ python -m src.visualization.streaming_plots --input data/output --processed data
 
 A run that finishes below `--min-tweets` exits non-zero, so the pipeline stops rather than carrying a thin corpus into the analysis. `--allow-shortfall` opts out.
 
+### Exit codes and failure modes
+
+Every stage fails loudly rather than producing quiet, thin output. `run_pipeline.sh` runs
+under `set -euo pipefail`, so a non-zero stage halts the pipeline there instead of feeding
+partial data forward.
+
+| Exit | Meaning | What you see |
+|---|---|---|
+| `0` | success | `collection run complete`, then the next stage |
+| `1` | collected fewer than `--min-tweets` | `collected fewer tweets than required` with the shortfall |
+| `2` | no X credentials found | see below |
+
+With no `.env` and no `X_AUTH_TOKEN`/`X_CT0` exported, the collector exits `2` with one
+line — no traceback, and the pipeline stops at stage 1:
+
+```json
+{"level": "ERROR", "logger": "x_collector", "message": "missing credentials",
+ "error": "No X session cookies found. Set X_AUTH_TOKEN and X_CT0 (or X_COOKIES) in your
+ environment/.env, or pass --cookies. Copy them from a logged-in x.com session:
+ DevTools -> Application -> Cookies -> https://x.com."}
+```
+
 ### Targeting the trading session
 
 x.com's Latest search pages backwards from *now*. Collecting in the evening therefore spends the rate-limit budget on post-close chatter and may never reach the trading session — which is exactly the data the market-hours-filtered signal needs. `--offset-hours` ends the window earlier so a run can aim at the NSE session directly:
@@ -160,10 +204,11 @@ python -m src.scraper.x_collector --hours 6.3 --offset-hours 8.4 --min-tweets 15
 
 On a real run this took `#nifty` from 15 in-session tweets to 983.
 
-### Nitter fallback
+### Selecting the collector
 
 ```bash
-bash scripts/run_pipeline.sh      # Selenium/Nitter path — currently collects nothing
+bash scripts/run_pipeline.sh                    # x.com (default)
+COLLECTOR=nitter bash scripts/run_pipeline.sh   # Selenium/Nitter
 ```
 
 ## Real-time service
