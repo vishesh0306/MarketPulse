@@ -27,15 +27,29 @@ HASHTAGS="${HASHTAGS:-nifty50,sensex,intraday,banknifty}"
 HOURS="${HOURS:-24}"
 MIN_TWEETS="${MIN_TWEETS:-2000}"
 WORKERS="${WORKERS:-4}"
+# Set VALIDATE=0 to skip the per-stage exit-criteria checks (exploratory runs).
+VALIDATE="${VALIDATE:-1}"
+
+# Runs scripts/validate_phase.py against a stage's run-summary JSON and aborts the
+# pipeline if a mechanical check fails — a shortfall, a broken record-count invariant,
+# an empty output. set -e already stops on the exit code; this makes the reason visible.
+validate() {
+    [ "$VALIDATE" = "1" ] || return 0
+    echo "    validating $1 output..."
+    "$PYTHON" scripts/validate_phase.py --phase "$1"
+}
 
 echo "[1/4] Collecting tweets..."
 "$PYTHON" -m src.scraper.twitter_scraper --hashtags "$HASHTAGS" --hours "$HOURS" --min-tweets "$MIN_TWEETS" --workers "$WORKERS"
+validate scraper
 
 echo "[2/4] Processing & storing..."
 "$PYTHON" -m src.processing.storage --input data/raw --output data/processed
+validate processing
 
 echo "[3/4] Generating signals..."
 "$PYTHON" -m src.analysis.signal_generator --input data/processed --output data/output
+validate signals
 
 echo "[4/4] Plotting..."
 "$PYTHON" -m src.visualization.streaming_plots --input data/output --processed data/processed
