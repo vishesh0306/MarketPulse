@@ -33,11 +33,18 @@ def _check_scraper(summary: dict[str, Any]) -> list[CheckResult]:
     target = summary.get("min_tweets_target") or load_settings().scraper.min_tweets_target
     checks.append((total >= target, f"total_collected >= min_tweets_target ({total}/{target})"))
 
+    # A hashtag that collected nothing is only a problem if it was actually *tried*.
+    # Collection shares one run-wide target, so once it's met the remaining hashtags are
+    # deliberately skipped — they come back with no hosts tried, and failing the run for
+    # that would contradict the very behaviour that lets a dense hashtag cover a sparse
+    # one. Only an attempted-but-empty hashtag signals a real collection problem.
     per_hashtag = summary.get("per_hashtag", [])
-    hashtags_with_data = [entry["hashtag"] for entry in per_hashtag if entry.get("collected", 0) > 0]
-    checks.append(
-        (len(hashtags_with_data) == len(per_hashtag), f"every requested hashtag collected >0 tweets ({hashtags_with_data})")
-    )
+    attempted = [e for e in per_hashtag if e.get("hosts_tried")]
+    empty = [e["hashtag"] for e in attempted if e.get("collected", 0) == 0]
+    skipped = [e["hashtag"] for e in per_hashtag if not e.get("hosts_tried")]
+    checks.append((not empty, f"every attempted hashtag returned tweets (empty: {empty or 'none'})"))
+    if skipped:
+        print(f"[INFO] {len(skipped)} hashtag(s) skipped once the run-wide target was met: {skipped}")
     return checks
 
 

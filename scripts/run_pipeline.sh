@@ -23,12 +23,17 @@ else
 fi
 cd "$REPO_ROOT"
 
-HASHTAGS="${HASHTAGS:-nifty50,sensex,intraday,banknifty}"
 HOURS="${HOURS:-24}"
 MIN_TWEETS="${MIN_TWEETS:-2000}"
 WORKERS="${WORKERS:-4}"
 # Set VALIDATE=0 to skip the per-stage exit-criteria checks (exploratory runs).
 VALIDATE="${VALIDATE:-1}"
+# Which collector to run. "x" reads x.com with a logged-in session's cookies and is the
+# only one that currently returns anything; "nitter" is the original Selenium/mirror path,
+# kept for the day a usable mirror exists again. See README, "Collection".
+COLLECTOR="${COLLECTOR:-x}"
+# Empty means "whatever config lists" — the assignment's four hashtags plus the related set.
+HASHTAGS="${HASHTAGS:-}"
 
 # Runs scripts/validate_phase.py against a stage's run-summary JSON and aborts the
 # pipeline if a mechanical check fails — a shortfall, a broken record-count invariant,
@@ -39,8 +44,19 @@ validate() {
     "$PYTHON" scripts/validate_phase.py --phase "$1"
 }
 
-echo "[1/4] Collecting tweets..."
-"$PYTHON" -m src.scraper.twitter_scraper --hashtags "$HASHTAGS" --hours "$HOURS" --min-tweets "$MIN_TWEETS" --workers "$WORKERS"
+echo "[1/4] Collecting tweets (source: $COLLECTOR)..."
+if [ -n "$HASHTAGS" ]; then
+    HASHTAG_ARGS=(--hashtags "$HASHTAGS")
+else
+    HASHTAG_ARGS=()
+fi
+if [ "$COLLECTOR" = "nitter" ]; then
+    "$PYTHON" -m src.scraper.twitter_scraper "${HASHTAG_ARGS[@]}" \
+        --hours "$HOURS" --min-tweets "$MIN_TWEETS" --workers "$WORKERS"
+else
+    "$PYTHON" -m src.scraper.x_collector "${HASHTAG_ARGS[@]}" \
+        --hours "$HOURS" --min-tweets "$MIN_TWEETS"
+fi
 validate scraper
 
 echo "[2/4] Processing & storing..."
