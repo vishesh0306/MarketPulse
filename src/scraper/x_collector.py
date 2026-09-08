@@ -29,6 +29,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable
 
+from src.processing.cleaner import clean_text, normalize_for_features
+from src.processing.deduplicator import content_hash
 from src.utils.config_loader import Settings, load_settings
 from src.utils.logger import get_logger, set_level, write_run_summary
 
@@ -149,6 +151,20 @@ def tweet_to_record(tweet: Any, source_hashtag: str, *, collected_at: datetime |
     }
 
 
+def _near_duplicate_key(record: dict[str, Any]) -> str:
+    """The processing stage's near-duplicate hash, computed here so the collector's target
+    counts tweets that will actually survive into the dataset.
+
+    Must stay in step with `processing.near_duplicate_hash_fields` — text_normalized +
+    username + source_hashtag. The collector only has raw text, so it applies the same
+    cleaner the processing stage would before hashing. Without this the run stopped at N
+    distinct ids and processing then dropped a slice of them as near-duplicates, so a
+    2,000-tweet target delivered 1,963.
+    """
+    normalized = normalize_for_features(clean_text(str(record.get("text", ""))))
+    return content_hash([normalized, str(record.get("username", "")), str(record.get("source_hashtag", ""))])
+
+
 def _load_dotenv_once() -> None:
     """Best-effort load of a local .env so the collector runs without exporting vars by
     hand. python-dotenv is optional; missing it just means you export them yourself."""
@@ -227,6 +243,7 @@ async def collect_hashtag(
     offset_hours: float = 0.0,
     per_hashtag_cap: int = _DEFAULT_PER_HASHTAG_CAP,
     run_unique_ids: set[str] | None = None,
+    run_content_hashes: set[str] | None = None,
     window_end: datetime | None = None,
 ) -> dict[str, Any]:
     """Streams one hashtag's tweets to JSONL, stopping when the run-wide target is met.
@@ -245,8 +262,10 @@ async def collect_hashtag(
     """
     collected = 0
     out_of_window = 0
+    near_duplicates = 0
     seen_ids: set[str] = set()
     run_unique_ids = run_unique_ids if run_unique_ids is not None else set()
+    run_content_hashes = run_content_hashes if run_content_hashes is not None else set()
     window_end = window_end or datetime.now(timezone.utc)
     errors: list[str] = []
     oldest: str | None = None
@@ -273,6 +292,15 @@ async def collect_hashtag(
                     if not within_window(str(record["created_at"]), hours, offset_hours, now=window_end):
                         out_of_window += 1
                         continue
+                    # The same near-duplicate rule processing applies, so the target counts
+                    # tweets that will actually survive into the dataset. Without it the run
+                    # stopped at N distinct ids and processing then removed a slice of them,
+                    # delivering 1,963 against a target of 2,000.
+                    digest = _near_duplicate_key(record)
+                    if digest in run_content_hashes:
+                        near_duplicates += 1
+                        continue
+                    run_content_hashes.add(digest)
                     out_file.write(json.dumps(record, ensure_ascii=False) + "\n")
                     out_file.flush()
                     collected += 1
@@ -310,6 +338,7 @@ async def collect_hashtag(
                 "hashtag": hashtag,
                 "collected": collected,
                 "dropped_out_of_window": out_of_window,
+                "dropped_near_duplicate": near_duplicates,
                 "oldest": oldest,
                 "newest": newest,
             }
@@ -320,6 +349,7 @@ async def collect_hashtag(
         "collected": collected,
         "unique_ids": len(seen_ids),
         "dropped_out_of_window": out_of_window,
+        "dropped_near_duplicate": near_duplicates,
         "parse_errors": 0,
         "errors": errors,
         "oldest_tweet": oldest,
@@ -335,6 +365,7 @@ def _empty_summary(hashtag: str) -> dict[str, Any]:
         "collected": 0,
         "unique_ids": 0,
         "dropped_out_of_window": 0,
+        "dropped_near_duplicate": 0,
         "parse_errors": 0,
         "errors": [],
         "oldest_tweet": None,
@@ -364,6 +395,7 @@ async def collect(
     instant, rather than each re-deriving "now" as the run stretches over rate-limit waits.
     """
     run_unique_ids: set[str] = set()
+    run_content_hashes: set[str] = set()
     window_end = datetime.now(timezone.utc)
     rows = 0
 
@@ -383,6 +415,7 @@ async def collect(
             remaining=remaining,
             offset_hours=offset_hours,
             run_unique_ids=run_unique_ids,
+            run_content_hashes=run_content_hashes,
             window_end=window_end,
         )
         rows += int(summary["collected"])

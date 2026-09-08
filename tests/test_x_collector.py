@@ -31,7 +31,9 @@ def _tweet(
     tweet_id: int = 1234567890,
     *,
     minutes_ago: int = 5,
-    text: str = "Nifty breakout above 24000 @rbi #nifty50 #BankNifty",
+    text: str | None = None,   # defaults to text unique per id — identical text from one
+                               # author is a near-duplicate and gets collapsed, which is
+                               # correct but would make every fixture tweet the same one
     likes: int = 12,
     retweets: int = 3,
     replies: int = 4,
@@ -41,6 +43,8 @@ def _tweet(
     naive_date: bool = False,
 ) -> SimpleNamespace:
     date = _NOW - timedelta(minutes=minutes_ago)
+    if text is None:
+        text = f"Nifty breakout above 24000 @rbi #nifty50 #BankNifty tweet {tweet_id}"
     return SimpleNamespace(
         id=tweet_id,
         id_str=str(tweet_id),
@@ -279,6 +283,25 @@ async def test_target_counts_distinct_tweets_not_rows(tmp_path: Path) -> None:
     assert distinct == 3
     assert rows == 9
     assert all(int(s["collected"]) == 3 for s in summaries)
+
+
+async def test_target_survives_the_pipeline_near_duplicate_rule(tmp_path: Path) -> None:
+    """The collector must apply processing's near-duplicate rule too, or it stops at N
+    distinct ids and processing then removes a slice of them — an observed 2,000-tweet
+    target delivered 1,963. Same author, same text, same hashtag = one tweet."""
+    same = "Nifty breakout above 24000 #nifty50"
+    api = _FakeAPI([
+        _tweet(1, text=same),
+        _tweet(2, text=same),  # same author, same text, different id -> one tweet
+        _tweet(3, text="Sensex slips on weak cues"),
+    ])
+
+    summary = await collect_hashtag(api, "nifty50", 24, tmp_path / "n.jsonl", remaining=lambda: 100)
+
+    assert summary["collected"] == 2, "the repost must not count toward the target"
+    assert summary["dropped_near_duplicate"] == 1
+    ids = [json.loads(line)["tweet_id"] for line in (tmp_path / "n.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert ids == ["1", "3"]
 
 
 async def test_collect_pins_the_window_for_the_whole_run(tmp_path: Path) -> None:
