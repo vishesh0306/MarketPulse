@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -36,6 +37,35 @@ logger = get_logger("x_collector")
 # x.com caps how deep a single search query will paginate, so the collector walks each
 # hashtag and stops on the run-wide target rather than trying to drain one query.
 _DEFAULT_PER_HASHTAG_CAP = 2000
+
+# How often to emit a progress line while collecting a hashtag.
+_PROGRESS_EVERY = 100
+
+
+def route_twscrape_logs() -> None:
+    """Forwards twscrape's loguru output into this project's structured logger.
+
+    twscrape logs the thing you most need to see during a long run — "No account
+    available for queue SearchTimeline. Next available at 23:20:56" — but to its own
+    loguru sink, in a different format, and nothing else prints while it waits. Routing it
+    here means one stream and one format shows both our progress and why a pause is
+    happening, so a rate-limit wait is distinguishable from a hang.
+    """
+    try:
+        from loguru import logger as loguru_logger
+    except ImportError:  # twscrape absent (pure-function use); nothing to route
+        return
+
+    def _sink(message: Any) -> None:
+        record = message.record
+        logger.log(
+            logging.getLevelName(record["level"].name),
+            record["message"],
+            extra={"extra_fields": {"source": "twscrape"}},
+        )
+
+    loguru_logger.remove()
+    loguru_logger.add(_sink, level="INFO")
 
 
 class MissingCredentialsError(RuntimeError):
@@ -159,6 +189,10 @@ async def build_api(cookies: str, db_path: str, account_label: str) -> Any:
     """
     from twscrape import API
 
+    # After the import, not before: twscrape installs its own loguru handler at import
+    # time, which would otherwise replace ours again.
+    route_twscrape_logs()
+
     api = API(db_path)
     await api.pool.add_account_cookies(account_label, cookies)
     return api
@@ -206,6 +240,10 @@ async def collect_hashtag(
     oldest: str | None = None
     newest: str | None = None
 
+    logger.info(
+        "hashtag collection started",
+        extra={"extra_fields": {"hashtag": hashtag, "still_needed": remaining(), "output": str(output_path)}},
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         stream = _search_stream(api, hashtag, hours, offset_hours, per_hashtag_cap)
@@ -229,6 +267,22 @@ async def collect_hashtag(
                     created = str(record["created_at"])
                     oldest = created if oldest is None or created < oldest else oldest
                     newest = created if newest is None or created > newest else newest
+                    # Without this the run can sit silent for 15 minutes at a stretch
+                    # while it pages and waits out rate limits, with no way to tell a
+                    # working run from a hung one.
+                    if collected % _PROGRESS_EVERY == 0:
+                        logger.info(
+                            "collecting",
+                            extra={
+                                "extra_fields": {
+                                    "hashtag": hashtag,
+                                    "collected": collected,
+                                    "still_needed": max(0, remaining() - collected),
+                                    "newest": newest,
+                                    "oldest": oldest,
+                                }
+                            },
+                        )
     except Exception as exc:  # noqa: BLE001 — one hashtag failing must not sink the run
         logger.exception("hashtag collection failed", extra={"extra_fields": {"hashtag": hashtag}})
         errors.append(f"{type(exc).__name__}: {exc}")
