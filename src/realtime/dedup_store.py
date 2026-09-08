@@ -35,25 +35,32 @@ class RedisDedupStore:
 
     @staticmethod
     def content_key_fields(record: dict[str, object]) -> list[str]:
-        """The fields whose hash defines a near-duplicate in the stream: same text from the
-        same author, regardless of which hashtag search surfaced it."""
-        return [str(record.get("text_normalized") or record.get("text", "")), str(record.get("username", ""))]
+        """Fields whose hash defines a near-duplicate — same as the batch deduplicator
+        (text + author + source_hashtag), so a tweet legitimately found under two hashtag
+        searches counts once per hashtag, not once overall."""
+        return [
+            str(record.get("text_normalized") or record.get("text", "")),
+            str(record.get("username", "")),
+            str(record.get("source_hashtag", "")),
+        ]
 
-    async def check_and_record(self, tweet_id: str, content_digest: str) -> bool:
-        """True if this tweet was already seen (exact id or near-duplicate content).
-        Records the id and content hash when it's new."""
-        id_is_new = await self._redis.set(f"{self._id_prefix}{tweet_id}", "1", ex=self._ttl, nx=True)
+    async def check_and_record(self, dedup_key: str, content_digest: str) -> bool:
+        """True if this tweet was already seen (exact key or near-duplicate content).
+        Records both when it's new."""
+        id_is_new = await self._redis.set(f"{self._id_prefix}{dedup_key}", "1", ex=self._ttl, nx=True)
         if not id_is_new:
             return True
         content_is_new = await self._redis.set(
-            f"{self._content_prefix}{content_digest}", tweet_id, ex=self._ttl, nx=True
+            f"{self._content_prefix}{content_digest}", dedup_key, ex=self._ttl, nx=True
         )
         return not content_is_new
 
     async def is_duplicate(self, record: dict[str, object]) -> bool:
-        """Convenience wrapper: derive the content hash from a tweet record and dedup it."""
+        """Convenience wrapper: dedup a tweet record on (tweet_id, source_hashtag) plus a
+        near-duplicate content hash."""
+        key = f"{record['tweet_id']}:{record.get('source_hashtag', '')}"
         digest = content_hash(self.content_key_fields(record))
-        return await self.check_and_record(str(record["tweet_id"]), digest)
+        return await self.check_and_record(key, digest)
 
     async def count(self) -> int:
         """Approximate number of distinct tweet ids currently retained (for /metrics)."""
