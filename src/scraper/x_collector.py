@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncGenerator, Callable
 
 from src.utils.config_loader import Settings, load_settings
 from src.utils.logger import get_logger, set_level, write_run_summary
@@ -163,15 +164,21 @@ async def build_api(cookies: str, db_path: str, account_label: str) -> Any:
     return api
 
 
-async def _iter_hashtag(
+def _search_stream(
     api: Any, hashtag: str, hours: float, offset_hours: float, limit: int
-) -> AsyncIterator[Any]:
+) -> AsyncGenerator[Any, None]:
+    """The raw twscrape search generator for one hashtag.
+
+    Deliberately *not* an `async def` wrapper that re-yields: the collector stops early
+    once the run-wide target is met, and breaking out of a generator that re-yields from
+    another one closes the inner generator while it is still awaiting a page, which raises
+    `RuntimeError: aclose(): asynchronous generator is already running` and leaves pending
+    tasks behind. Returning the underlying generator directly means there is exactly one
+    object to close, and `aclosing` in the caller closes it deterministically.
+    """
     # product=Latest forces the chronological tab; the "Top" tab reorders by engagement
     # and pulls in older popular tweets, which is the opposite of what a 24h window wants.
-    async for tweet in api.search(
-        build_query(hashtag, hours, offset_hours), limit=limit, kv={"product": "Latest"}
-    ):
-        yield tweet
+    return api.search(build_query(hashtag, hours, offset_hours), limit=limit, kv={"product": "Latest"})
 
 
 async def collect_hashtag(
@@ -201,23 +208,27 @@ async def collect_hashtag(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
+        stream = _search_stream(api, hashtag, hours, offset_hours, per_hashtag_cap)
+        # aclosing() so an early break shuts the search generator down deterministically
+        # rather than leaving the event loop to finalize it mid-await at interpreter exit.
         with output_path.open("a", encoding="utf-8") as out_file:
-            async for tweet in _iter_hashtag(api, hashtag, hours, offset_hours, per_hashtag_cap):
-                if collected >= remaining():
-                    break
-                record = tweet_to_record(tweet, hashtag)
-                if record["tweet_id"] in seen_ids:
-                    continue
-                seen_ids.add(record["tweet_id"])
-                if not within_window(str(record["created_at"]), hours, offset_hours):
-                    out_of_window += 1
-                    continue
-                out_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-                out_file.flush()
-                collected += 1
-                created = str(record["created_at"])
-                oldest = created if oldest is None or created < oldest else oldest
-                newest = created if newest is None or created > newest else newest
+            async with contextlib.aclosing(stream) as tweets:
+                async for tweet in tweets:
+                    if collected >= remaining():
+                        break
+                    record = tweet_to_record(tweet, hashtag)
+                    if record["tweet_id"] in seen_ids:
+                        continue
+                    seen_ids.add(record["tweet_id"])
+                    if not within_window(str(record["created_at"]), hours, offset_hours):
+                        out_of_window += 1
+                        continue
+                    out_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    out_file.flush()
+                    collected += 1
+                    created = str(record["created_at"])
+                    oldest = created if oldest is None or created < oldest else oldest
+                    newest = created if newest is None or created > newest else newest
     except Exception as exc:  # noqa: BLE001 — one hashtag failing must not sink the run
         logger.exception("hashtag collection failed", extra={"extra_fields": {"hashtag": hashtag}})
         errors.append(f"{type(exc).__name__}: {exc}")
