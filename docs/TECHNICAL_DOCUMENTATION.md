@@ -6,9 +6,19 @@ MarketPulse has two modes over one shared analysis core: a **batch pipeline** (c
 
 ### Collection
 
-Tweets are collected with Selenium against Nitter, an open-source front-end for X.com that serves the same public content over plain HTML without requiring a login — the constraint-driven choice given the assignment rules out paid/official APIs. A list of Nitter hosts is configured with automatic failover, since they're unofficial mirrors and availability varies; a hashtag keeps trying configured hosts in order until it reaches its target or runs out of hosts, not just until one host stops being rate-limited. The user agent is re-rolled per host so one worker doesn't present the same fingerprint to the whole list.
+The original design scraped Nitter — an open-source, login-free front-end for X's public content — with Selenium, which was the natural constraint-driven choice given the assignment rules out paid and official APIs. That approach no longer works. X removed anonymous access in 2024, so Nitter instances now require real X account tokens; X bans those tokens quickly, and the public mirrors answer `403`, `410`, or dead DNS. A run against the seven configured hosts collects zero tweets.
 
-Collection covers the assignment's four hashtags — `#nifty50`, `#sensex`, `#intraday`, `#banknifty` — plus a short list of similar Indian-market tags (`#nifty`, `#niftybank`, `#giftnifty`, `#stockmarket`, `#sharemarket`, `#nse`) to widen coverage toward the 2,000-tweet target given how thin the public mirrors are. Hashtags are scraped concurrently through a process pool — one browser session and rate limiter per hashtag — and share a single run-wide collected counter, so a dense hashtag keeps collecting to cover one that runs dry rather than both stopping at a fixed `min_tweets / N` slice. A token-bucket rate limiter with exponential backoff handles rate limiting, and a soft-block detector recognizes anti-bot challenge pages and retries instead of failing outright. A run that finishes below `--min-tweets` exits non-zero (unless `--allow-shortfall` is passed), so `run_pipeline.sh`, `validate_phase.py` and the container all treat a shortfall as a failure.
+**The working collector reads x.com directly.** `x_collector.py` authenticates with the `auth_token`/`ct0` cookies of an ordinary logged-in browser session and calls the same JSON endpoints x.com's own front-end calls. Nothing is purchased and the developer API is not involved — this is a logged-in session reading its own search results, which is what "scrape Twitter/X, no API, consider Selenium" points at once the site is login-walled. Two practical wins over HTML scraping: no parsing of a virtualised React timeline, and engagement counts arrive as integers rather than being absent.
+
+The Selenium/Nitter path is retained in `twitter_scraper.py` as a documented fallback. Both collectors emit identical JSONL, so every downstream stage is agnostic to which produced the data.
+
+Collection covers the assignment's four hashtags — `#nifty50`, `#sensex`, `#intraday`, `#banknifty` — plus similar Indian-market tags (`#nifty`, `#niftybank`, `#giftnifty`, `#stockmarket`, `#sharemarket`, `#nse`). Hashtags share a single run-wide counter, so a dense hashtag keeps collecting to cover one that runs dry rather than each stopping at a fixed `min_tweets / N` slice. A run finishing below `--min-tweets` exits non-zero (unless `--allow-shortfall`), so `run_pipeline.sh`, `validate_phase.py` and the container all treat a shortfall as failure.
+
+**Rate limiting.** x.com permits ~50 search requests per 15 minutes per account, about 1,000 tweets per window. twscrape tracks this per account and per endpoint, waits for the reset, and rotates to any other registered account — so a 2,000-tweet run completes unattended across two or three windows, and adding accounts multiplies throughput linearly. The Nitter path has its own defences for a hostile mirror: token-bucket pacing with jitter, exponential backoff, soft-block detection on anti-bot challenge pages, multi-host failover, and a per-host user-agent re-roll.
+
+**Two behaviours of x.com search that the collector has to correct for.** Its `since_time`/`until_time` operators are a hint, not a guarantee — a trial run returned a 2023 tweet — so the window is enforced again client-side and out-of-window drops are counted in the run summary. And Latest-tab results page backwards from *now*, so an evening run spends its entire rate-limit budget on post-close chatter and never reaches the trading session; `--offset-hours` ends the window earlier so a run can aim at the NSE session directly. On a real run that took `#nifty` from 15 in-session tweets to 983.
+
+**Concurrency.** Hashtags are collected sequentially here, deliberately: the rate limit is per *account* and shared across all hashtags, so issuing them in parallel would exhaust the same budget faster with no gain. Concurrency is applied where it does pay — one browser process per hashtag in the Selenium path, `joblib` across buckets in the bootstrap, and an async collector/updater split in the real-time service.
 
 Each tweet is recorded with username, timestamp, text, engagement counts, mentions, and hashtags, streamed to disk as JSON Lines.
 
@@ -28,13 +38,15 @@ Signals are bucketed in 15-minute windows, filtered to the NSE session (09:15–
 
 ### Real-time service
 
-`python -m src.realtime` (or `docker compose up realtime`) runs a FastAPI app on `:8000`. On startup it warm-starts from the last 24h of `data/processed` — whatever the Selenium backfill left — then tails each hashtag's Nitter **RSS** feed (`/search/rss`: one GET, no browser, no JS challenge) every ~20s, guarded by a per-hashtag high-water tweet-id mark and a **Redis** dedup store (each id and content hash a TTL'd key, so state is bounded and survives a restart). New tweets cross a bounded `asyncio.Queue` — with an explicit block-vs-drop-oldest policy — into the incremental signal engine, which keeps an `O(1)`-per-tweet Welford accumulator per `(hashtag, 15-min bucket)` plus a bounded reservoir for a seal-time bootstrap. When a bucket's window plus a grace period has passed it is sealed once, appended to a JSONL history, and pushed to WebSocket subscribers.
+`python -m src.realtime` (or `docker compose up realtime`) runs a FastAPI app on `:8000`. On startup it warm-starts from the last 24h of `data/processed` — whatever the batch collector left — then tails each hashtag's Nitter **RSS** feed (`/search/rss`: one GET, no browser, no JS challenge) every ~20s, guarded by a per-hashtag high-water tweet-id mark and a **Redis** dedup store (each id and content hash a TTL'd key, so state is bounded and survives a restart). New tweets cross a bounded `asyncio.Queue` — with an explicit block-vs-drop-oldest policy — into the incremental signal engine, which keeps an `O(1)`-per-tweet Welford accumulator per `(hashtag, 15-min bucket)` plus a bounded reservoir for a seal-time bootstrap. When a bucket's window plus a grace period has passed it is sealed once, appended to a JSONL history, and pushed to WebSocket subscribers.
 
 - `GET /signals[?live=true]` — sealed history, optionally plus the live un-sealed buckets
 - `WS /ws/signals` — the history on connect, then each bucket as it seals
 - `GET /metrics` — ingest lag p50/p95, tweets/minute per hashtag, dedup hit rate, per-host poll success, per-hashtag signal staleness
 
-The RSS feed carries no engagement counts, so streamed tweets have virality 0 — for a tweet seconds old that is also the true value, and Selenium stays the tool for the deep backfill where cursor paging is genuinely needed.
+The RSS feed carries no engagement counts, so streamed tweets have virality 0 — for a tweet seconds old that is also the true value, and the batch collector stays the tool for the deep backfill where paging is genuinely needed.
+
+The tail loop still reads RSS and is therefore subject to the same Nitter outage described under Collection. The incremental-signal, Redis-dedup, queue and API layers are source-agnostic and run against any collector emitting the standard record shape, so repointing the tail at `x_collector` is a contained change rather than a redesign.
 
 ### Visualization
 
@@ -47,7 +59,9 @@ Plots are built from pre-aggregated bucket data and a bounded reservoir sample o
 - **Multiplicative, not additive, signal composition** — sentiment sets the sign, virality and momentum scale its magnitude.
 - **Suppress rather than publish thin buckets** — a suppressed bucket is more useful to a consumer than an interval that means nothing.
 - **Shared collection target** — the run chases 2,000 tweets total, not a fixed slice per hashtag.
-- **RSS for the tail, Selenium for the backfill** — an order of magnitude cheaper per tweet for a frequent poll; Selenium only where paging is needed.
+- **Cookie-authenticated x.com over a public mirror** — forced by Nitter's collapse, but strictly better: no HTML parsing, real engagement counts, and a rate limit that is documented and waited out rather than guessed at.
+- **Enforce the time window client-side** — x.com's own `since_time` operators leak older tweets, so the collector re-checks every record rather than trusting the query.
+- **RSS for the tail, browser paging for the backfill** — an order of magnitude cheaper per tweet for a frequent poll; heavier paging only where depth is needed.
 - **Redis for real-time dedup** — bounded by TTL, survives restarts; the in-process set stays fine for a batch run that exits.
 - **Fail loudly on a shortfall** — the 2,000-tweet minimum is enforced at the scraper, the pipeline script and the container.
 
@@ -57,4 +71,4 @@ The stage design holds at higher volume; the backend under each stage would chan
 
 ## Tech Stack
 
-Python, Selenium, pandas, PyArrow, scikit-learn, matplotlib, pydantic, joblib, httpx, Redis, FastAPI, uvicorn.
+Python, twscrape, Selenium, pandas, PyArrow, scikit-learn, matplotlib, pydantic, joblib, httpx, Redis, FastAPI, uvicorn.
