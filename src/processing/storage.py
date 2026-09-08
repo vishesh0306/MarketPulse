@@ -94,6 +94,28 @@ def _tmp_sibling(path: Path) -> Path:
     return path.parent / f".{path.name}.tmp"
 
 
+def _carry_over_markers(final_dir: Path, tmp_dir: Path) -> None:
+    """Copies dotfiles from the outgoing directory into the incoming one.
+
+    The swap below replaces final_dir wholesale, which also throws away anything in it
+    that wasn't written by this run — including the tracked `.gitkeep` files that keep
+    `data/processed/` and `data/processed/_rejects/` in git. Every run was silently
+    deleting them and dirtying the working tree. Pipeline output is only ever
+    `date=*/hashtag=*/part-*.parquet` and reject JSONL, so a leading dot is a reliable
+    marker of "placed here deliberately, not produced by the pipeline".
+    """
+    if not final_dir.exists():
+        return
+    for marker in final_dir.rglob(".*"):
+        if not marker.is_file():
+            continue
+        destination = tmp_dir / marker.relative_to(final_dir)
+        if destination.exists():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(marker, destination)
+
+
 def _replace_directory(tmp_dir: Path, final_dir: Path) -> None:
     """Swaps tmp_dir into final_dir's place, atomically per directory rename.
 
@@ -103,6 +125,7 @@ def _replace_directory(tmp_dir: Path, final_dir: Path) -> None:
     — never leaves less output on disk than there was before the run started, the way
     clearing output_dir up front before writing anything new would.
     """
+    _carry_over_markers(final_dir, tmp_dir)
     backup_dir = final_dir.parent / f".{final_dir.name}.bak"
     if backup_dir.exists():
         shutil.rmtree(backup_dir)

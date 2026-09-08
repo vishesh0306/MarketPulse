@@ -335,6 +335,27 @@ def test_process_raw_files_writes_readable_parquet(tmp_path: Path, raw_dir: Path
     assert pd.api.types.is_datetime64_any_dtype(df["created_at"])
 
 
+def test_process_raw_files_preserves_directory_markers(tmp_path: Path, raw_dir: Path) -> None:
+    """The output swap replaces data/processed wholesale, which was silently deleting the
+    tracked .gitkeep files that keep the directory (and _rejects/) in git — every run left
+    them showing as deleted in `git status`. Dotfiles must survive the swap."""
+    output_dir = tmp_path / "processed"
+    rejects_dir = output_dir / "_rejects"
+    rejects_dir.mkdir(parents=True)
+    (output_dir / ".gitkeep").touch()
+    (rejects_dir / ".gitkeep").touch()
+
+    for _ in range(2):  # the swap only happens on a run, and must survive repeat runs
+        process_raw_files(
+            raw_dir, output_dir, chunk_size_rows=50, rejects_dir=rejects_dir,
+            near_duplicate_fields=["text_normalized", "username"], compression="snappy",
+        )
+
+    assert (output_dir / ".gitkeep").exists(), "top-level .gitkeep destroyed by the swap"
+    assert (rejects_dir / ".gitkeep").exists(), "nested _rejects/.gitkeep destroyed by the swap"
+    assert not pd.read_parquet(output_dir).empty, "markers preserved but output lost"
+
+
 def test_process_raw_files_honors_configured_chunk_size(tmp_path: Path) -> None:
     """chunk_size_rows should be a load-bearing parameter: a small chunk size against a
     single partition must produce that many separate part files."""

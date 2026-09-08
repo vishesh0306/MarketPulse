@@ -290,15 +290,18 @@ def _process_card_batch(
 
         if record["tweet_id"] in seen_ids:
             continue
-        seen_ids.add(record["tweet_id"])
 
         created_at = datetime.fromisoformat(record["created_at"])
         if created_at < cutoff:
             # Results are newest-first, so one tweet past the lookback window means
             # everything after it is too — stop paging instead of fruitlessly fetching
-            # pages that can't count.
+            # pages that can't count. Recorded *before* seen_ids so this tweet, which is
+            # never written, doesn't inflate the run summary's unique_ids over the row
+            # count actually on disk.
             reached_cutoff = True
             break
+
+        seen_ids.add(record["tweet_id"])
 
         record["collected_at"] = datetime.now(timezone.utc).isoformat()
         out_file.write(json.dumps(record, ensure_ascii=False) + "\n")

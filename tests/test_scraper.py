@@ -5,6 +5,7 @@ rate-limit/backoff scenario that doesn't require a live network call.
 from __future__ import annotations
 
 import io
+import json
 import sys
 import threading
 from concurrent.futures import Future
@@ -27,6 +28,7 @@ from src.scraper.twitter_scraper import (
     ScrapeTimeoutError,
     _attempt_host,
     _extract_engagement,
+    _process_card_batch,
     _scrape_one_hashtag,
     _SharedProgress,
     build_search_url,
@@ -316,6 +318,55 @@ def test_scrape_hashtag_stops_at_run_wide_target_not_its_own_slice(
     assert len(calls) == 1  # stopped after one host, target met run-wide
     assert calls[0][1] == 2  # remaining passed in = target(5) - already(3)
     assert summary["collected"] == 2
+
+
+def _card(tweet_id: str, title: str, text: str = "nifty update") -> str:
+    """Minimal Nitter timeline-item, shaped like tests/fixtures/search_results.html."""
+    return (
+        f'<div class="timeline-item">'
+        f'<a class="tweet-link" href="/trader{tweet_id}/status/{tweet_id}#m"></a>'
+        f'<span class="tweet-date"><a href="/x/status/{tweet_id}#m" title="{title}">2m</a></span>'
+        f'<div class="tweet-content" dir="auto">{text}</div>'
+        f"</div>"
+    )
+
+
+def test_process_card_batch_writes_dedupes_and_stops_at_cutoff() -> None:
+    """Covers the write/dedup/cutoff path, and pins the summary bug it used to carry:
+    a tweet past the lookback cutoff is never written, so it must not land in seen_ids
+    either — that made the run summary report more unique_ids than rows on disk."""
+    cutoff = datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+    batch = [
+        _card("101", "Aug 4, 2026 · 12:59 PM UTC"),   # inside window -> written
+        _card("101", "Aug 4, 2026 · 12:58 PM UTC"),   # duplicate id  -> skipped
+        _card("102", "Aug 4, 2026 · 12:30 PM UTC"),   # inside window -> written
+        _card("103", "Aug 4, 2026 · 11:00 AM UTC"),   # past cutoff   -> stops here
+        _card("104", "Aug 4, 2026 · 12:45 PM UTC"),   # never reached
+    ]
+    out, seen = io.StringIO(), set()
+
+    collected, parse_errors, reached_cutoff, errors = _process_card_batch(
+        batch, "nifty50", out, seen, cutoff
+    )
+
+    assert (collected, parse_errors, errors) == (2, 0, [])
+    assert reached_cutoff is True
+    written = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [r["tweet_id"] for r in written] == ["101", "102"]
+    assert all(r["source_hashtag"] == "nifty50" and r["collected_at"] for r in written)
+    # the crux: unique_ids is len(seen_ids), so it must match the rows actually written
+    assert seen == {"101", "102"}
+    assert len(seen) == collected
+
+
+def test_process_card_batch_counts_unparseable_cards_without_aborting() -> None:
+    batch = [_card("201", "Aug 4, 2026 · 12:59 PM UTC"), "<div class='timeline-item'></div>"]
+    out, seen = io.StringIO(), set()
+    collected, parse_errors, _, errors = _process_card_batch(
+        batch, "sensex", out, seen, datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+    )
+    assert collected == 1
+    assert parse_errors == 1 and errors
 
 
 class _SerialExecutor:
