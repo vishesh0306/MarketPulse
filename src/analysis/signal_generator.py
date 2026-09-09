@@ -77,14 +77,18 @@ def bootstrap_confidence_interval(
 ) -> tuple[float, float]:
     """Bootstrap CI over the values in a bucket; wider when the bucket has fewer tweets.
 
-    Pure resampling degenerates to zero width for a single-tweet bucket — there's nothing
-    to resample, so it would otherwise report the *most* confidence exactly where there
-    should be the *least*. A standard-error-based margin (using `fallback_std`, typically
-    the dataset-wide std, as a prior only when the bucket itself has fewer than two points
-    to estimate its own variance) is combined with the bootstrap margin via max(). For
-    buckets with real local variance (n >= 2), the local std is used as-is rather than
-    floored at the dataset-wide value — flooring every bucket at global variance would
-    report the same wide interval on a tight, well-sampled bucket as on a thin one.
+    Pure resampling degenerates to zero width whenever a bucket has no internal variance
+    to resample — so it would otherwise report the *most* confidence exactly where there
+    should be the *least*. Two cases reach that state: a single-tweet bucket, and a bucket
+    whose tweets all score identically (in practice, one where the lexicon matched none of
+    them, leaving every contribution at 0.0). Neither is evidence the true signal equals
+    the point estimate. A standard-error-based margin (using `fallback_std`, typically the
+    dataset-wide std, as a prior) covers both, and is combined with the bootstrap margin
+    via max().
+
+    A bucket with real local variance uses its own std as-is rather than being floored at
+    the dataset-wide value — flooring every bucket at global variance would report the
+    same wide interval on a tight, well-sampled bucket as on a thin one.
     """
     arr = np.asarray(values, dtype=float)
     n = arr.size
@@ -95,6 +99,9 @@ def bootstrap_confidence_interval(
     alpha = 1 - confidence_level
     z = float(stats.norm.ppf(1 - alpha / 2))
 
+    # The dataset-wide prior is the default; a bucket only earns a narrower interval by
+    # having variance of its own to estimate from.
+    std = fallback_std
     bootstrap_margin = 0.0
     if n >= 2:
         rng = np.random.default_rng(seed)
@@ -102,9 +109,9 @@ def bootstrap_confidence_interval(
         lower_pct = float(np.percentile(resample_means, 100 * alpha / 2))
         upper_pct = float(np.percentile(resample_means, 100 * (1 - alpha / 2)))
         bootstrap_margin = max(point_estimate - lower_pct, upper_pct - point_estimate)
-        std = float(arr.std(ddof=1))
-    else:
-        std = fallback_std
+        local_std = float(arr.std(ddof=1))
+        if local_std > 0.0:
+            std = local_std
     analytical_margin = z * std / np.sqrt(n)
 
     margin = max(bootstrap_margin, analytical_margin)

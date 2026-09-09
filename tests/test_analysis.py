@@ -258,6 +258,47 @@ def test_bootstrap_ci_tight_bucket_not_floored_at_dataset_wide_std() -> None:
     assert (narrow_hi - narrow_lo) < 0.3
 
 
+@pytest.mark.parametrize("n", [2, 5, 9, 13])
+def test_bootstrap_ci_uniform_bucket_is_not_falsely_narrow(n: int) -> None:
+    """A multi-tweet bucket whose values are all identical has no variance to resample,
+    so both the bootstrap and the local-std margin collapse to zero. That is the same
+    degeneracy the single-tweet case guards against and it must fall back the same way:
+    identical scores are not evidence of certainty. In practice this is a bucket the
+    lexicon could not read at all, leaving every contribution at 0.0 — it was 19 of 64
+    scored buckets in the committed sample, each reporting a 90% CI of exactly [0, 0]."""
+    lo, hi = bootstrap_confidence_interval(
+        [0.0] * n, n_resamples=200, confidence_level=0.90, seed=1, fallback_std=0.25
+    )
+    assert hi > lo
+
+
+def test_bootstrap_ci_uniform_bucket_fallback_is_not_specific_to_zero() -> None:
+    """The degeneracy is about absent variance, not about the value being 0.0."""
+    lo, hi = bootstrap_confidence_interval(
+        [0.4] * 8, n_resamples=200, confidence_level=0.90, seed=1, fallback_std=0.25
+    )
+    assert lo < 0.4 < hi
+
+
+def test_bucket_result_unreadable_bucket_gets_an_honest_interval() -> None:
+    """End-to-end shape of the bug: every tweet in the bucket scored neutral because the
+    lexicon matched none of them, so every per-tweet contribution is exactly 0.0."""
+    group = pd.DataFrame(
+        {
+            "sentiment": [0.0] * 7,
+            "virality_norm": [0.1, 0.4, 0.9, 0.2, 0.7, 0.5, 0.3],
+            "momentum_norm": [0.2] * 7,
+        }
+    )
+    weights = {"sentiment": 0.5, "virality": 0.3, "hashtag_momentum": 0.2}
+    result = _bucket_result(
+        ("nifty50", pd.Timestamp("2026-08-04T12:00:00Z")), group, weights, 200, 0.90, fallback_std=0.1, base_seed=42
+    )
+
+    assert result["composite_signal"] == 0.0
+    assert result["ci_lower"] < result["ci_upper"], "a bucket the lexicon could not read must not claim certainty"
+
+
 # ---- aggregator --------------------------------------------------------------
 
 
