@@ -384,6 +384,7 @@ async def collect(
     *,
     api: Any,
     offset_hours: float = 0.0,
+    window_end: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Runs every hashtag against x.com until the run-wide target is met.
 
@@ -393,10 +394,12 @@ async def collect(
 
     The window is pinned once here so every hashtag queries and filters against the same
     instant, rather than each re-deriving "now" as the run stretches over rate-limit waits.
+    `window_end` overrides the instant it is pinned to; a real run leaves it unset and gets
+    "now", while a test can supply a fixed one so its fixtures don't age out of the window.
     """
     run_unique_ids: set[str] = set()
     run_content_hashes: set[str] = set()
-    window_end = datetime.now(timezone.utc)
+    window_end = window_end or datetime.now(timezone.utc)
     rows = 0
 
     def remaining() -> int:

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from pathlib import Path
 
 import fakeredis.aioredis
@@ -15,7 +18,33 @@ from src.realtime.metrics import Metrics
 from src.realtime.supervisor import TailSupervisor, build_engine
 from src.utils.config_loader import load_settings
 
-_RSS = (Path(__file__).parent / "fixtures" / "nitter_rss.xml").read_text(encoding="utf-8")
+_RSS_FIXTURE = (Path(__file__).parent / "fixtures" / "nitter_rss.xml").read_text(encoding="utf-8")
+
+
+def _with_recent_dates(rss: str, newest_minutes_ago: int = 40) -> str:
+    """Re-dates the fixture's items into a bucket that has closed but is still inside the
+    backfill window.
+
+    The committed fixture carries fixed pubDates so the RSS *parser* test can assert on
+    exact timestamps. The supervisor is a different matter: `sealed_history()` drops
+    anything older than `backfill_hours`, so fixed dates make these tests a time bomb —
+    they pass until the fixture is more than 24h old, then the supervisor ingests nothing
+    and they fail on a day nobody changed anything. They also fail *quietly* first: once
+    the history empties out, the file-vs-history assertion just compares two empty lists
+    and still passes. Anchor to the clock instead; what these tests care about is
+    ingest/dedup/seal behaviour, not which day it is.
+
+    40 minutes back puts every item in a 15-minute bucket that closed well before the seal
+    grace period, so the buckets still seal on shutdown exactly as they did before.
+    """
+    newest = datetime.now(timezone.utc) - timedelta(minutes=newest_minutes_ago)
+    stamps = (newest - timedelta(seconds=150 * i) for i in range(rss.count("<pubDate>")))
+    # format_datetime is the exact inverse of the parsedate_to_datetime the client uses,
+    # so this stays correct regardless of the machine's locale.
+    return re.sub(r"<pubDate>[^<]*</pubDate>", lambda _m: f"<pubDate>{format_datetime(next(stamps))}</pubDate>", rss)
+
+
+_RSS = _with_recent_dates(_RSS_FIXTURE)
 
 
 # ---- metrics ---------------------------------------------------------------
@@ -77,14 +106,17 @@ async def test_supervisor_ingests_seals_and_writes_history(tmp_path: Path) -> No
         sup.stop()
         await asyncio.wait_for(task, timeout=5)
 
-    # fixture has 3 parseable items for one 06:15 bucket; today's clock is well past its
-    # seal time, so the shutdown flush seals it.
+    # The 3 parseable items are re-dated to a bucket that closed 40 minutes ago, so the
+    # shutdown flush seals it and it stays inside the backfill window.
     assert captured, "expected at least one sealed bucket"
     assert any(r["hashtag"] == "nifty50" for r in captured)
 
     history = tmp_path / "sealed_signals.jsonl"
     assert history.exists()
     rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    # Non-empty first: sealed_history() filters by backfill_hours, so if the fixture ages
+    # out of the window this comparison silently degrades into [] == [] and passes.
+    assert rows, "sealed history file should not be empty"
     assert rows == sup.sealed_history()
 
     snap = sup.metrics.snapshot()

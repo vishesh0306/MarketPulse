@@ -24,6 +24,11 @@ from src.scraper.x_collector import (
     within_window,
 )
 
+# Every fixture tweet is built relative to this instant, so any call that filters against
+# the collection window must be pinned to it too — pass `window_end=_NOW`. Letting the
+# collector fall back to the real clock makes these tests a time bomb: they pass until
+# wall-clock now drifts more than `hours` past _NOW, then every fixture tweet is silently
+# dropped as out-of-window and eight of them fail on a date nobody changed anything on.
 _NOW = datetime(2026, 9, 8, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -146,7 +151,7 @@ async def test_collect_hashtag_drops_out_of_window_tweets(tmp_path: Path) -> Non
     api = _FakeAPI([fresh, ancient])
     out = tmp_path / "n.jsonl"
 
-    summary = await collect_hashtag(api, "nifty50", 24, out, remaining=lambda: 100)
+    summary = await collect_hashtag(api, "nifty50", 24, out, remaining=lambda: 100, window_end=_NOW)
 
     assert summary["collected"] == 1
     assert summary["dropped_out_of_window"] == 1
@@ -239,7 +244,7 @@ async def test_collect_hashtag_writes_jsonl_and_dedupes(tmp_path: Path) -> None:
     api = _FakeAPI(tweets)
     out = tmp_path / "nifty50.jsonl"
 
-    summary = await collect_hashtag(api, "nifty50", 24, out, remaining=lambda: 100)
+    summary = await collect_hashtag(api, "nifty50", 24, out, remaining=lambda: 100, window_end=_NOW)
 
     assert summary["collected"] == 2
     assert summary["unique_ids"] == 2
@@ -254,7 +259,7 @@ async def test_collect_hashtag_stops_at_run_wide_remaining(tmp_path: Path) -> No
     run_ids: set[str] = set()
     summary = await collect_hashtag(
         api, "nifty50", 24, tmp_path / "n.jsonl",
-        remaining=lambda: max(0, 3 - len(run_ids)), run_unique_ids=run_ids,
+        remaining=lambda: max(0, 3 - len(run_ids)), run_unique_ids=run_ids, window_end=_NOW,
     )
     assert summary["collected"] == 3
     assert run_ids == {"1", "2", "3"}
@@ -268,7 +273,7 @@ async def test_target_counts_distinct_tweets_not_rows(tmp_path: Path) -> None:
     api = _FakeAPI(shared)
 
     summaries, unique = await collect(
-        ["nifty50", "sensex", "intraday"], 24, 5, tmp_path, "20260908T120000Z", api=api
+        ["nifty50", "sensex", "intraday"], 24, 5, tmp_path, "20260908T120000Z", api=api, window_end=_NOW
     )
 
     rows = sum(int(s["collected"]) for s in summaries)
@@ -296,7 +301,7 @@ async def test_target_survives_the_pipeline_near_duplicate_rule(tmp_path: Path) 
         _tweet(3, text="Sensex slips on weak cues"),
     ])
 
-    summary = await collect_hashtag(api, "nifty50", 24, tmp_path / "n.jsonl", remaining=lambda: 100)
+    summary = await collect_hashtag(api, "nifty50", 24, tmp_path / "n.jsonl", remaining=lambda: 100, window_end=_NOW)
 
     assert summary["collected"] == 2, "the repost must not count toward the target"
     assert summary["dropped_near_duplicate"] == 1
@@ -318,7 +323,7 @@ async def test_collect_pins_the_window_for_the_whole_run(tmp_path: Path) -> None
 
 async def test_collect_hashtag_records_oldest_and_newest(tmp_path: Path) -> None:
     api = _FakeAPI([_tweet(1, minutes_ago=60), _tweet(2, minutes_ago=5)])
-    summary = await collect_hashtag(api, "nifty50", 24, tmp_path / "n.jsonl", remaining=lambda: 100)
+    summary = await collect_hashtag(api, "nifty50", 24, tmp_path / "n.jsonl", remaining=lambda: 100, window_end=_NOW)
     assert summary["oldest_tweet"] < summary["newest_tweet"]
 
 
@@ -337,7 +342,9 @@ async def test_collect_shares_the_target_across_hashtags(tmp_path: Path) -> None
     """A dense hashtag should cover for the rest: once the run-wide target is met, later
     hashtags are skipped rather than each chasing its own slice."""
     api = _FakeAPI([_tweet(i) for i in range(1, 21)])
-    summaries, _ = await collect(["nifty50", "sensex", "intraday"], 24, 5, tmp_path, "20260908T120000Z", api=api)
+    summaries, _ = await collect(
+        ["nifty50", "sensex", "intraday"], 24, 5, tmp_path, "20260908T120000Z", api=api, window_end=_NOW
+    )
 
     assert sum(int(s["collected"]) for s in summaries) == 5
     assert summaries[0]["collected"] == 5
@@ -347,6 +354,8 @@ async def test_collect_shares_the_target_across_hashtags(tmp_path: Path) -> None
 
 async def test_collect_spreads_across_hashtags_when_each_is_thin(tmp_path: Path) -> None:
     api = _FakeAPI([_tweet(1), _tweet(2)])
-    summaries, unique = await collect(["nifty50", "sensex"], 24, 10, tmp_path, "20260908T120000Z", api=api)
+    summaries, unique = await collect(
+        ["nifty50", "sensex"], 24, 10, tmp_path, "20260908T120000Z", api=api, window_end=_NOW
+    )
     assert [s["collected"] for s in summaries] == [2, 2]
     assert unique == 2, "same two tweets under both hashtags is 2 distinct, not 4"
