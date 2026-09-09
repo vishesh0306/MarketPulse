@@ -42,7 +42,11 @@ class ScraperConfig(BaseModel):
     related_hashtags: list[str] = []
     search_path_template: str
     nitter_hosts: list[str]
-    hours_lookback: int
+    # Fractional, because a collection window is not always a whole number of hours: the
+    # NSE cash session is 6.25h, and --offset-hours targets it directly. Every stage that
+    # consumes this has to agree, or a run that collects 6.3h of tweets dies in the next
+    # stage on "invalid int value: '6.3'".
+    hours_lookback: float
     min_tweets_target: int
     headless: bool
     worker_pool_size: int

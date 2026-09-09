@@ -175,7 +175,7 @@ def process_raw_files(
     rejects_dir: Path,
     near_duplicate_fields: list[str],
     compression: str,
-    lookback_hours: int | None = None,
+    lookback_hours: float | None = None,
 ) -> dict[str, Any]:
     """Runs the full clean -> validate -> dedup -> write pipeline over all raw JSONL files.
 
@@ -271,18 +271,27 @@ def process_raw_files(
     return {**counts, "reject_reasons": dict(reject_reason_counts)}
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Split out from main() so the accepted argument *types* are testable without
+    running a whole processing pass — the stage-2 crash this guards was purely a type."""
     parser = argparse.ArgumentParser(description="Clean, dedupe, and store raw tweets as Parquet.")
     parser.add_argument("--input", type=str, default="data/raw")
     parser.add_argument("--output", type=str, default="data/processed")
     parser.add_argument(
         "--lookback-hours",
-        type=int,
+        # Float to match the collector's --hours. run_pipeline.sh forwards the same $HOURS
+        # to both, so an int here turned a fractional window into a stage-2 crash after
+        # collection had already run for 30-45 minutes.
+        type=float,
         default=None,
         help="Keep only tweets from the last N hours (default: config scraper.hours_lookback). "
-        "Pass 0 to process every raw file regardless of age.",
+        "Accepts fractional hours. Pass 0 to process every raw file regardless of age.",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     settings = load_settings()
     set_level(logger, settings.logging.level)

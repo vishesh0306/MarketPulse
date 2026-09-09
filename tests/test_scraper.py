@@ -31,6 +31,7 @@ from src.scraper.twitter_scraper import (
     _process_card_batch,
     _scrape_one_hashtag,
     _SharedProgress,
+    build_parser as nitter_build_parser,
     build_search_url,
     extract_tweet_fields,
     iter_result_pages,
@@ -121,6 +122,25 @@ def test_all_hashtags_is_core_then_related_deduped() -> None:
 def test_default_config_keeps_the_four_assignment_hashtags() -> None:
     core = load_settings().scraper.hashtags
     assert set(core) == {"nifty50", "sensex", "intraday", "banknifty"}
+
+
+def test_hours_cli_accepts_fractional_hours() -> None:
+    """Both collectors take the same $HOURS from run_pipeline.sh, so the Nitter path has to
+    accept what the x.com path does. An int here made `COLLECTOR=nitter HOURS=6.3` fail at
+    stage 1 the same way an int lookback failed at stage 2."""
+    args = nitter_build_parser(load_settings()).parse_args(["--hours", "6.3"])
+    assert args.hours == pytest.approx(6.3)
+
+
+def test_config_hours_lookback_accepts_a_fractional_window() -> None:
+    """The NSE cash session is 6.25 hours, and this value is the default for both
+    collectors' --hours and for the processing stage's --lookback-hours.
+
+    Goes through model_validate rather than model_copy(update=...) on purpose: model_copy
+    skips validation, so it would pass just as happily against the old `int` field."""
+    scraper = load_settings().scraper
+    revalidated = type(scraper).model_validate({**scraper.model_dump(), "hours_lookback": 6.25})
+    assert revalidated.hours_lookback == pytest.approx(6.25)
 
 
 def test_scrape_one_hashtag_handles_driver_failure_gracefully(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

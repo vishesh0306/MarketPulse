@@ -459,7 +459,7 @@ def _attempt_host(
 def scrape_hashtag(
     driver: WebDriver,
     hashtag: str,
-    hours_lookback: int,
+    hours_lookback: float,
     min_tweets: int,
     output_path: Path,
     settings: Settings,
@@ -563,10 +563,9 @@ def _scrape_one_hashtag(
         }
 
 
-def main() -> None:
-    settings = load_settings()
-    set_level(logger, settings.logging.level)
-
+def build_parser(settings: Settings) -> argparse.ArgumentParser:
+    """Split out from main() so the accepted argument *types* are testable without a
+    browser — defaults come from settings, so it takes them rather than loading them."""
     parser = argparse.ArgumentParser(description="Scrape Indian market-hashtag tweets via Nitter/Selenium.")
     parser.add_argument(
         "--hashtags",
@@ -574,7 +573,11 @@ def main() -> None:
         default=",".join(settings.scraper.all_hashtags),
         help="Comma-separated hashtags, no '#'. Defaults to the assignment's four plus config related_hashtags.",
     )
-    parser.add_argument("--hours", type=int, default=settings.scraper.hours_lookback, help="Lookback window in hours.")
+    # Float to match x_collector's --hours: run_pipeline.sh forwards the same $HOURS to
+    # whichever collector COLLECTOR selects, so both have to accept the same values.
+    parser.add_argument(
+        "--hours", type=float, default=settings.scraper.hours_lookback, help="Lookback window in hours."
+    )
     parser.add_argument(
         "--min-tweets", type=int, default=settings.scraper.min_tweets_target, help="Minimum total tweets to collect."
     )
@@ -584,7 +587,14 @@ def main() -> None:
         action="store_true",
         help="Exit 0 even if fewer than --min-tweets were collected (default: exit non-zero on a shortfall).",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    settings = load_settings()
+    set_level(logger, settings.logging.level)
+
+    args = build_parser(settings).parse_args()
 
     hashtags = [tag.strip().lstrip("#") for tag in args.hashtags.split(",") if tag.strip()]
 

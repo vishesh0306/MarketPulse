@@ -12,7 +12,7 @@ import pytest
 from src.processing.cleaner import clean_text, detect_lang_hint, normalize_for_features
 from src.processing.deduplicator import content_hash, dedup_records
 from src.processing.schema import validate
-from src.processing.storage import process_raw_files
+from src.processing.storage import build_parser, process_raw_files
 
 
 # ---- cleaner ----------------------------------------------------------------
@@ -399,6 +399,32 @@ def test_process_raw_files_without_lookback_keeps_everything(tmp_path: Path) -> 
 
     assert summary["out"] == 3
     assert summary["out_of_window"] == 0
+
+
+def test_lookback_hours_cli_accepts_fractional_hours() -> None:
+    """run_pipeline.sh forwards the same $HOURS to the collector and to this stage, and the
+    collector's --hours is a float — the NSE session is 6.25h, and the README documents
+    `--hours 6.3`. An int here meant `HOURS=6.3 bash scripts/run_pipeline.sh` collected for
+    30-45 minutes and then died in stage 2 on "invalid int value: '6.3'"."""
+    args = build_parser().parse_args(["--lookback-hours", "6.3"])
+    assert args.lookback_hours == pytest.approx(6.3)
+
+
+def test_process_raw_files_applies_a_fractional_lookback(tmp_path: Path) -> None:
+    """The fractional window has to survive into the cutoff arithmetic, not just parse."""
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    _raw_with_ages(raw_dir, [1.0, 6.0, 6.5, 10.0])  # 6.5h and 10h fall outside a 6.3h window
+    output_dir = tmp_path / "processed"
+
+    summary = process_raw_files(
+        raw_dir, output_dir, chunk_size_rows=50, rejects_dir=output_dir / "_rejects",
+        near_duplicate_fields=["text_normalized", "username"], compression="snappy",
+        lookback_hours=6.3,
+    )
+
+    assert summary["out"] == 2, "a 6.3h window must keep the 1h and 6h tweets"
+    assert summary["out_of_window"] == 2
 
 
 def test_process_raw_files_preserves_directory_markers(tmp_path: Path, raw_dir: Path) -> None:
